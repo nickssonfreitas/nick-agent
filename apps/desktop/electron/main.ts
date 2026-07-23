@@ -65,6 +65,7 @@ import {
   savedProfileSsh,
   tokenPreview
 } from './connection-config'
+import { installRendererCsp } from './csp'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
@@ -10652,6 +10653,12 @@ app.whenReady().then(() => {
   }
 
   installMediaPermissions()
+  // Content-Security-Policy on the renderer (Report-Only unless
+  // HERMES_CSP_ENFORCE=1). Skipped under a dev server. See csp.ts. Before
+  // enforcing: connect-src must be fed the active backend origin via
+  // csp.setGatewayOrigins() from the connection-applied path (not yet wired),
+  // and the packaged index.html script hash must be re-verified.
+  installRendererCsp(session.defaultSession, DEV_SERVER)
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()

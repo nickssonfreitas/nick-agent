@@ -714,6 +714,67 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
+# Report-Only by default; set HERMES_CSP_ENFORCE=1 to enforce. Report-Only lets
+# a deployment collect violation reports (browser console / a report-uri) for a
+# full release cycle before the policy can break anything — the SPA still runs
+# unchanged while it reports.
+_CSP_ENFORCE = os.environ.get("HERMES_CSP_ENFORCE") == "1"
+
+
+def _build_dashboard_csp(nonce: str) -> str:
+    # script-src is nonce-only (no 'unsafe-inline'): the two inline bootstrap
+    #   <script> blocks in _serve_index carry this nonce; dashboard plugin JS
+    #   loads via <script src> from same-origin /dashboard-plugins, covered by
+    #   'self'.
+    # style-src keeps 'unsafe-inline': the built SPA injects theme <style> at
+    #   runtime (web/src/themes/context.tsx) with no nonce hook reachable from
+    #   the server. A CSP-L3 nonce would disable 'unsafe-inline' on modern
+    #   browsers anyway, so this costs nothing there and only aids a fallback.
+    # connect-src allows ws:/wss: for the same-origin PTY/console/event sockets.
+    return "; ".join([
+        "default-src 'none'",
+        f"script-src 'self' 'nonce-{nonce}'",
+        f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "img-src 'self' data: blob: https:",
+        "media-src 'self' data: blob:",
+        "connect-src 'self' ws: wss:",
+        "worker-src 'self' blob:",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ])
+
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    """Outermost middleware: mint a per-request CSP nonce and stamp security
+    headers on every response.
+
+    Registered after ``_dashboard_health_middleware`` so it is the new
+    outermost layer — the nonce is set on ``request.state`` before anything
+    downstream runs, so ``_serve_index`` can thread the same nonce into its
+    inline bootstrap scripts and the browser accepts them under the enforced
+    policy. Uses ``setdefault`` so a route that sets its own header wins.
+    """
+    nonce = secrets.token_urlsafe(16)
+    request.state.csp_nonce = nonce
+    response = await call_next(request)
+    header = (
+        "Content-Security-Policy" if _CSP_ENFORCE else "Content-Security-Policy-Report-Only"
+    )
+    response.headers.setdefault(header, _build_dashboard_csp(nonce))
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "geolocation=(), camera=(), payment=(), usb=(), interest-cohort=()",
+    )
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Authenticated-route self-test: every minute, make one in-process request
 # against a cheap DB-touching authenticated route with the real session
@@ -18201,11 +18262,15 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index(prefix: str = ""):
+    def _serve_index(prefix: str = "", nonce: str = ""):
         """Return index.html with the session token + base-path injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
-        or empty string when served at root.
+        or empty string when served at root. ``nonce`` is the per-request CSP
+        nonce minted by ``_security_headers_middleware``; it is stamped onto the
+        inline bootstrap ``<script>`` so the tag is accepted under the enforced
+        ``script-src 'nonce-…'`` policy. Empty string when unset (Report-Only /
+        no middleware) leaves the tag un-nonced, which is harmless there.
 
         When the OAuth auth gate is active (``app.state.auth_required``),
         the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
@@ -18228,9 +18293,10 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        nonce_attr = f' nonce="{nonce}"' if nonce else ""
         if gated:
             bootstrap_script = (
-                f"<script>"
+                f"<script{nonce_attr}>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
@@ -18238,7 +18304,7 @@ def mount_spa(application: FastAPI):
             )
         else:
             bootstrap_script = (
-                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f'<script{nonce_attr}>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
@@ -18317,7 +18383,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        return _serve_index(prefix, getattr(request.state, "csp_nonce", ""))
 
 
 # ---------------------------------------------------------------------------
