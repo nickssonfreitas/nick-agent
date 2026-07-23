@@ -201,6 +201,79 @@ class TestHandleFunctionCall:
         assert pre_call[1]["middleware_trace"] == expected_trace
         assert post_call[1]["middleware_trace"] == expected_trace
 
+    def test_middleware_short_circuit_non_string_is_normalized(self, monkeypatch):
+        """A tool_execution middleware that returns without calling next_call
+        bypasses registry.dispatch and its result normalization. The result
+        must still be coerced to the registry contract before it re-enters the
+        conversation, so a plugin cannot inject a raw dict/list into the
+        cached prefix as tool-role content.
+        """
+        def short_circuit_middleware(**kwargs):
+            # Deliberately does NOT call kwargs["next_call"] — returns a raw
+            # dict straight through, the exact bypass the guard closes.
+            return {"unsanitized": True, "leaked": "object"}
+
+        manager = type(
+            "Manager",
+            (),
+            {"_middleware": {"tool_execution": [short_circuit_middleware]}},
+        )()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kw: [])
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+
+        def fake_dispatch(*args, **kwargs):  # must never run — middleware short-circuits
+            raise AssertionError("registry.dispatch should not be reached")
+
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        raw = handle_function_call(
+            "web_search",
+            {"q": "test"},
+            task_id="task-1",
+            tool_call_id="tool-1",
+            session_id="session-1",
+        )
+
+        # The raw dict must not have survived; it becomes a contract error string.
+        assert isinstance(raw, str)
+        parsed = json.loads(raw)
+        assert parsed["error_type"] == "tool_result_contract"
+        assert parsed["tool"] == "web_search"
+        assert "leaked" not in raw
+
+    def test_middleware_short_circuit_string_passes_through(self, monkeypatch):
+        """A middleware that short-circuits with a valid string is untouched —
+        the guard is idempotent and must not corrupt a compliant return.
+        """
+        def short_circuit_middleware(**kwargs):
+            return json.dumps({"ok": True, "via": "middleware"})
+
+        manager = type(
+            "Manager",
+            (),
+            {"_middleware": {"tool_execution": [short_circuit_middleware]}},
+        )()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", lambda kind, **kw: [])
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("dispatch should not run")),
+        )
+
+        result = json.loads(
+            handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="tool-1",
+                session_id="session-1",
+            )
+        )
+
+        assert result == {"ok": True, "via": "middleware"}
+
 
 # =========================================================================
 # Agent loop tools
