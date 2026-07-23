@@ -540,11 +540,14 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
-    def test_save_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
-        """Regression for #31518: pre-existing .env mode (e.g. 0640 for a
-        Docker bind-mount that the operator chose) survives subsequent
-        writes. Previously _secure_file ran unconditionally after the
-        mode-restore branch and re-tightened to 0600.
+    def test_save_env_value_strips_group_read_from_existing_mode_on_posix(self, tmp_path):
+        """A pre-existing group-readable .env is clamped, not preserved.
+
+        Supersedes the earlier "preserve 0640" expectation. The mode-preserve
+        branch had no upper bound, so a .env that was ever created group- or
+        world-readable stayed that way permanently and every API key written
+        afterwards inherited the exposure. The clamp keeps the operator's owner
+        bits and strips group/other only — it can never loosen a mode.
         """
         if os.name == "nt":
             return
@@ -557,7 +560,63 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
 
         env_mode = env_path.stat().st_mode & 0o777
-        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+        assert env_mode == 0o600, f"expected 0o600, got {oct(env_mode)}"
+
+    def test_save_env_value_heals_world_readable_env_on_posix(self, tmp_path):
+        """A .env left at the host umask (0644) is healed on the next write.
+
+        This is the exposure the clamp exists to close: mkstemp already yields
+        0600 for a fresh file, so the leak was only ever in the unbounded
+        restore of a pre-existing loose mode.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o644)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o600, f"expected 0o600, got {oct(env_mode)}"
+
+    def test_save_env_value_clamp_never_loosens_owner_bits_on_posix(self, tmp_path):
+        """A deliberately stricter mode (0400) is preserved, not widened to 0600."""
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o400)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o400, f"expected 0o400, got {oct(env_mode)}"
+
+    def test_save_env_value_skip_chmod_escape_hatch_on_posix(self, tmp_path):
+        """HERMES_SKIP_CHMOD=1 still preserves a loose mode verbatim.
+
+        The escape hatch is load-bearing for exotic mounts (SMB/CIFS) where
+        chmod is refused or meaningless; it must keep working.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o644)
+
+        with patch.dict(
+            os.environ, {"HERMES_HOME": str(tmp_path), "HERMES_SKIP_CHMOD": "1"}
+        ):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o644, f"expected 0o644, got {oct(env_mode)}"
 
     def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
         """Regression test for #30355."""
@@ -855,12 +914,12 @@ class TestRemoveEnvValue:
             remove_env_value("ORPHAN_KEY")
             assert "ORPHAN_KEY" not in os.environ
 
-    def test_remove_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
-        """Regression: pre-existing .env mode (e.g. 0640 for a Docker
-        bind-mount the operator chose) survives a remove just as it does a
-        save. Previously _secure_file ran unconditionally after the
-        mode-restore branch and re-tightened to 0600 — the same bug fixed
-        in save_env_value (#33699), in the sibling remove path.
+    def test_remove_env_value_strips_group_read_from_existing_mode_on_posix(self, tmp_path):
+        """The remove path clamps a group-readable .env just as the save path does.
+
+        Supersedes the earlier "preserve 0640" expectation for the same reason:
+        an unbounded mode restore left a loose .env loose forever. Both writers
+        share one policy so they cannot diverge.
         """
         if os.name == "nt":
             return
@@ -875,7 +934,7 @@ class TestRemoveEnvValue:
         assert removed is True
         assert "DROP" not in env_path.read_text()
         env_mode = env_path.stat().st_mode & 0o777
-        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+        assert env_mode == 0o600, f"expected 0o600, got {oct(env_mode)}"
 
 
 class TestSaveConfigAtomicity:
