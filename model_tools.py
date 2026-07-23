@@ -1319,6 +1319,14 @@ def handle_function_call(
                 turn_id=turn_id or "",
                 api_request_id=api_request_id or "",
             )
+            # The _dispatch path normalizes via registry.dispatch, but a
+            # tool_execution middleware can short-circuit by returning a value
+            # WITHOUT calling next_call() — that value bypasses the registry
+            # contract and would flow straight into the conversation as
+            # tool-role content. Re-normalize here so a plugin cannot inject a
+            # non-string (or a forged multimodal envelope) into the cached
+            # prefix. Idempotent for the normal path: a string stays a string.
+            result = registry._normalize_handler_result(function_name, result)
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:

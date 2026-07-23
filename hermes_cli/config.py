@@ -893,6 +893,40 @@ def _secure_file(path):
         pass
 
 
+def _clamp_credential_mode(path, original_mode: int | None = None) -> None:
+    """Re-apply ``original_mode`` to a credential file with group/other stripped.
+
+    Used for ``~/.hermes/.env``, which holds API keys. Unlike :func:`_secure_file`
+    this is deliberately **not** container-exempt: that carve-out exists so an
+    operator's intentionally broader mode on a bind-mounted *config* file
+    survives a rewrite, but a group- or world-readable ``.env`` is a credential
+    leak, and the published image already runs ``chmod 600`` on it at every boot
+    (``docker/stage2-hook.sh``). This finishes the sweep started by the
+    "tighten .env permissions to 0600 at all creation sites" change, which
+    covered the shell/doctor/profile writers but missed this runtime one.
+
+    Clamp, not force: the owner bits the operator chose are preserved (0400 stays
+    0400), only group/other bits are removed, so this can never *loosen* a mode.
+    ``original_mode`` is the mode captured before an atomic replace; ``None``
+    means read the current mode (a fresh mkstemp file is already 0600).
+
+    Managed mode and ``HERMES_SKIP_CHMOD=1`` remain escape hatches, and every
+    failure is swallowed — a bind mount owned by another UID raises EPERM on
+    chmod and must never block startup.
+    """
+    if is_managed():
+        return
+    try:
+        current = stat.S_IMODE(os.stat(path).st_mode)
+        desired = current if original_mode is None else original_mode
+        if not os.environ.get("HERMES_SKIP_CHMOD"):
+            desired &= ~0o077
+        if desired != current:
+            os.chmod(path, desired)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed a default SOUL.md into HERMES_HOME, upgrading legacy empty templates.
 
@@ -8023,7 +8057,7 @@ def sanitize_env_file() -> int:
         except OSError:
             pass
         raise
-    _secure_file(env_path)
+    _clamp_credential_mode(env_path)
     invalidate_env_cache()
     return fixes
 
@@ -8177,15 +8211,9 @@ def save_env_value(key: str, value: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
-        else:
-            _secure_file(env_path)
+        # Keep the operator's owner bits, but never let group/other retain read
+        # access to a file full of API keys — including inside containers.
+        _clamp_credential_mode(env_path, original_mode)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -8248,16 +8276,8 @@ def remove_env_value(key: str) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
+            # Same credential clamp as save_env_value().
+            _clamp_credential_mode(env_path, original_mode)
         except BaseException:
             try:
                 os.unlink(tmp_path)
