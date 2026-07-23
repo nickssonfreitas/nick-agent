@@ -359,5 +359,18 @@ VOLUME [ "/opt/data" ]
 # and exec's the final program so its exit code becomes the container
 # exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
 # like `--version` would be intercepted by /init's POSIX shell.
+# Liveness probe. Deliberately NOT an HTTP check: this image has no EXPOSE and
+# no fixed listening port — the same image runs `chat`, `--tui`, `gateway` and
+# `serve`, so probing a port would mark healthy containers unhealthy in every
+# interactive mode. Instead we assert the thing common to all of them: the exec
+# shim resolves and the Python environment imports far enough to report a
+# version. That catches the failure this actually guards against — a corrupted
+# or half-mounted /opt/hermes tree, or a data volume that shadowed the install.
+#
+# start-period covers cold Python startup; the 5m interval keeps the recurring
+# cost negligible against a ~1s interpreter boot.
+HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
+    CMD [ "/opt/hermes/bin/hermes", "--version" ]
+
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
 CMD [ ]

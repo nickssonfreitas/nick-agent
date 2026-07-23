@@ -48,12 +48,18 @@ jobs:
 
       - name: Determine base ref
         id: base
+        # Expression values reach the shell through env, never spliced into the
+        # script text — GitHub hardening guidance, and it keeps this correct if
+        # a future caller passes something less trusted than github.base_ref.
+        env:
+          EVENT_NAME: ${{ inputs.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
-            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            BASE_REF="origin/${{ github.base_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+            BASE_REF="origin/$BASE_BRANCH"
           else
             BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
             BASE_REF="HEAD~1"

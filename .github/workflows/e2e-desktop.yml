@@ -81,8 +81,10 @@ jobs:
       # On main, we run with --update-snapshots to generate baselines.
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref_name }}" = "main" ]; then
+          if [ "$REF_NAME" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
             xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list --update-snapshots

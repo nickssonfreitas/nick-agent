@@ -4,6 +4,12 @@ name: JS Tests
 on:
   workflow_call:
 
+# Least privilege: this workflow only checks out and runs tests. Without an
+# explicit block it inherits the caller's token scope from ci.yml, which
+# includes packages:write, security-events:write and pull-requests:write.
+permissions:
+  contents: read
+
 jobs:
   workspaces:
     name: List npm workspaces

@@ -37,9 +37,15 @@ jobs:
 
       - name: Validate tag exists
         if: github.event_name == 'workflow_dispatch'
+        # confirm_tag is a free-form workflow_dispatch input — the one value
+        # here an operator fully controls. Interpolating it into the script
+        # text would let a crafted tag name close the quote and run commands
+        # on a runner that publishes to PyPI. Via env it stays a plain string.
+        env:
+          CONFIRM_TAG: ${{ inputs.confirm_tag }}
         run: |
-          if ! git tag -l "${{ inputs.confirm_tag }}" | grep -q .; then
-            echo "::error::Tag '${{ inputs.confirm_tag }}' does not exist in the repo"
+          if ! git tag -l "$CONFIRM_TAG" | grep -q .; then
+            echo "::error::Tag '$CONFIRM_TAG' does not exist in the repo"
             exit 1
           fi
 

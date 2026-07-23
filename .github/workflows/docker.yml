@@ -4,6 +4,15 @@ on:
   release:
     types: [published]
   workflow_call:
+    # Declared explicitly so ci.yml can pass just these two rather than
+    # handing this workflow the entire org/repo secret set via
+    # `secrets: inherit`. Optional because the `release` trigger reads them
+    # straight from the repo scope, and forks have neither.
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
 
 permissions:
   contents: read
