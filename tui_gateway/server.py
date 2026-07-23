@@ -16498,15 +16498,31 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
+        from agent.redact import redact_terminal_output
+        from tools.environments.local import _sanitize_subprocess_env
+
+        # shell.exec runs an arbitrary client-supplied command inside the TUI
+        # gateway process, which holds every provider/bot credential in
+        # os.environ. The approval denylist above is a destructive-command
+        # guard, not a confidentiality boundary — `env`, `printenv` and
+        # `cat ~/.hermes/.env` all pass it. Same env policy the agent terminal
+        # and the sibling command.dispatch handler already apply.
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            env=_sanitize_subprocess_env(os.environ.copy()),
         )
+        # Redact BEFORE truncating: slicing a tail can cut the vendor prefix off
+        # a credential, after which the prefix pattern no longer matches and the
+        # secret body survives verbatim. force=True so a user setting
+        # security.redact_secrets=false cannot disable this boundary.
+        stdout = redact_terminal_output(r.stdout or "", cmd, force=True)
+        stderr = redact_terminal_output(r.stderr or "", cmd, force=True)
         return _ok(
             rid,
             {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
+                "stdout": stdout[-4000:],
+                "stderr": stderr[-2000:],
                 "code": r.returncode,
             },
         )
