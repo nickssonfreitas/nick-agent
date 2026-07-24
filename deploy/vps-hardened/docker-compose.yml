@@ -1,0 +1,115 @@
+# Hardened Hermes Agent deployment for an internet-facing VPS.
+#
+# Differences from the shipped docker-compose.yml, and why (see DEPLOY.md):
+#   - No `network_mode: host`. Bridge network, and ONLY the caddy proxy
+#     publishes host ports. Nothing else is reachable from the internet.
+#   - Image pinned by digest, not :latest — reproducible and immutable.
+#   - Resource limits on every service — a runaway agent subprocess cannot
+#     starve the host.
+#   - cap_drop ALL + the exact caps s6-overlay's privilege drop needs, plus
+#     no-new-privileges, read_only rootfs with tmpfs for the s6 runtime.
+#   - Healthchecks so `depends_on` ordering is meaningful.
+#
+# The dashboard binds 0.0.0.0 INSIDE its own container namespace on purpose:
+# that is what engages the app's mandatory auth gate (should_require_auth) and
+# lets caddy reach it over the internal bridge. It is NOT published to the host.
+
+services:
+  gateway:
+    # Resolve a real digest first (see DEPLOY.md step 2) and replace this.
+    image: nousresearch/hermes-agent@sha256:REPLACE_WITH_PINNED_DIGEST
+    container_name: hermes
+    restart: unless-stopped
+    networks: [hermes-internal]
+    volumes:
+      - hermes-data:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+    command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'hermes gateway run' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    # SETUID/SETGID: s6-setuidgid privilege drop. CHOWN/FOWNER/DAC_OVERRIDE:
+    # stage2-hook.sh volume ownership fixups. KILL: s6-svscan signalling
+    # supervised children. NET_RAW: only if the agent ever shells out to ping.
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL", "NET_RAW"]
+    read_only: true
+    tmpfs: ["/run", "/tmp"]
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2g }
+        reservations: { cpus: "0.25", memory: 256m }
+
+  dashboard:
+    image: nousresearch/hermes-agent@sha256:REPLACE_WITH_PINNED_DIGEST
+    container_name: hermes-dashboard
+    restart: unless-stopped
+    networks: [hermes-internal]
+    depends_on: [gateway]
+    volumes:
+      - hermes-data:/opt/data
+    environment:
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_DASHBOARD=1
+      # Basic-auth credentials. Generate the hash offline (DEPLOY.md step 3);
+      # never put a plaintext password here on a real deployment.
+      - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_USER}
+      - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_PW_HASH}
+      # Stable signing secret so sessions survive a restart. 32+ random bytes.
+      - HERMES_DASHBOARD_BASIC_AUTH_SECRET=${HERMES_DASHBOARD_SECRET}
+      # Dashboard CSP is nonce-clean and safe to enforce; the desktop app is
+      # not (see the security PR). Leave unset to stay Report-Only first.
+      # - HERMES_CSP_ENFORCE=1
+    # Bind 0.0.0.0 in-namespace: engages the auth gate AND lets caddy reach it.
+    # No public `ports:` — caddy is the only internet-facing service.
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]
+    healthcheck:
+      # /api/status is auth-exempt by design (public_paths.py) — safe here.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9119/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "FOWNER", "DAC_OVERRIDE", "SETUID", "SETGID", "KILL"]
+    read_only: true
+    tmpfs: ["/run", "/tmp"]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1g }
+        reservations: { cpus: "0.25", memory: 256m }
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: hermes-proxy
+    restart: unless-stopped
+    networks: [hermes-internal]
+    depends_on: [dashboard]
+    # The ONLY container that publishes host ports. TLS terminates here.
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  hermes-internal:
+    driver: bridge
+
+volumes:
+  # A named volume, not a NAS/SMB bind mount: the .env permission clamp needs a
+  # POSIX filesystem where chmod is honoured (see the security PR / DEPLOY.md).
+  hermes-data:
+  caddy-data:
+  caddy-config:

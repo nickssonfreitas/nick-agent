@@ -1,0 +1,33 @@
+# Merge these keys into the container's ~/.hermes/config.yaml (i.e. the
+# hermes-data volume at /opt/data/config.yaml). Apply with DEPLOY.md step 6.
+# These are NOT read from this file directly — it is a reference to copy from.
+
+# Retention is OFF by default: a fresh install keeps every conversation forever
+# (sessions.auto_prune defaults to false). Turn it on explicitly for a
+# personal-data deployment, and run `hermes sessions optimize-storage` once
+# after enabling so the first prune actually VACUUMs pre-existing rows.
+sessions:
+  auto_prune: true
+  retention_days: 90
+  vacuum_after_prune: true
+
+# MCP servers are third-party code with the same filesystem reach as your user.
+# For EACH server you attach:
+#   - sampling.enabled: false  — sampling is ON by default and lets the server
+#     spend LLM inference on YOUR account and use the model as a free oracle.
+#   - tools.include: [...]     — allowlist only the tools you actually need, so
+#     a compromised or malicious server has the smallest possible surface.
+# Prefer remote HTTP MCP servers over stdio where you have the choice: a remote
+# server gets no local process, so it cannot read ~/.hermes, ~/.ssh, or the
+# other servers' secrets.
+mcp_servers:
+  example-server:
+    # command / url: ... (your server config)
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - only_the_tools_you_need
+
+# Kill switch, for reference (set as an env var, not here):
+#   HERMES_SAFE_MODE=1  disables ALL MCP loading.
