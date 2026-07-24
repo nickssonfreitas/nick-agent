@@ -1,0 +1,23 @@
+# TLS-terminating reverse proxy for the Hermes dashboard.
+#
+# Replace hermes.example.com with your domain (its A/AAAA record must point at
+# this VPS). Caddy fetches and renews a Let's Encrypt certificate automatically.
+#
+# CRITICAL — do NOT add `header_up Host` here. Rewriting the Host to localhost
+# is exactly the misconfiguration that collapses the auth gate: with a loopback
+# Host the app would fall into its no-auth loopback mode and serve the session
+# token embedded in index.html to any internet client (finding R1). Caddy's
+# default reverse_proxy preserves the client Host, which is correct — the
+# dashboard binds 0.0.0.0 so its Host check is a no-op there and auth is the
+# real boundary.
+
+hermes.example.com {
+	reverse_proxy dashboard:9119
+
+	# Belt-and-suspenders: HSTS. Safe only because everything is behind TLS here.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
+
+	encode gzip zstd
+}
