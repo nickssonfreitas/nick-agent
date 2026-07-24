@@ -170,3 +170,13 @@ apps/desktop/demo/
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 native/fts5_cjk/*.so
+
+# Local security-tooling workspace. `.security/install.sh` materializes scanner
+# binaries (bin/), isolated Python venvs and the CodeQL bundle (tools/, ~1 GB),
+# plus env.sh and versions.lock; `.security/scan.sh` writes per-run logs/ and
+# timestamped reports/ with a `latest` symlink. All of it is machine-local and
+# rebuildable by re-running the installer, so only the two scripts are tracked.
+# Reports may also embed source excerpts — keep them out of the repo.
+.security/*
+!.security/install.sh
+!.security/scan.sh
