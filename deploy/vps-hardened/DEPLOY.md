@@ -19,6 +19,16 @@ Files in this bundle:
 | `Caddyfile` | TLS reverse proxy that preserves the Host header |
 | `.env.example` | Compose substitution vars (dashboard auth, UID/GID) — copy to `.env` |
 | `config-snippet.yaml` | Retention + MCP sampling settings to merge into the container's config |
+| `verify.sh` | The verification checklist below, as an executable gate |
+| `remote-deploy.sh` | Digest swap + pre-deploy DB backup + health wait, runs on the VPS |
+| `hostinger-api.sh` | Hostinger VPS REST API wrapper, for disaster recovery only |
+| `BOOTSTRAP.md` | Which of these steps stay manual once deploys are automated |
+
+Doing this once by hand? Follow this file top to bottom. Wiring it to CI
+afterwards? Read `BOOTSTRAP.md` — it splits the procedure into the half that
+must stay manual (anything that creates a secret) and the half that automates
+cleanly (moving an image digest), and covers where the Hostinger MCP server
+does and does not fit.
 
 ---
 
@@ -115,6 +125,12 @@ Caddy fetches a certificate on first request. Give it a minute, then verify.
 
 ## Verification checklist — run before connecting personal data
 
+`./verify.sh all "$YOUR_DOMAIN"` runs everything below and exits non-zero if a
+hard check fails. Prefer it over pasting the commands one at a time: the same
+script is the gate in `.github/workflows/deploy-vps.yml`, so what blocks a CI
+deploy and what you run by hand cannot drift apart. The raw commands are kept
+here because you should be able to read what the gate actually asserts.
+
 ```bash
 # 1. Auth gate is ENGAGED (the whole ballgame). Must print: true
 curl -s https://YOUR_DOMAIN/api/status | jq '.auth_required'
@@ -155,12 +171,34 @@ Neither `state.db` nor `kanban.db` has a schema-downgrade guard, so treat every
 image change as a database operation:
 
 ```bash
+./remote-deploy.sh deploy sha256:<new digest>     # backs up FIRST, then swaps
+./verify.sh all "$YOUR_DOMAIN"
+./remote-deploy.sh rollback sha256:<old digest>   # if the checklist rejects it
+```
+
+`remote-deploy.sh` writes the pre-deploy copy to
+`/opt/hermes/backups/<timestamp>/` and records the newest path in
+`/opt/hermes/backups/.latest`.
+
+Doing it by hand instead? Resolve the volume name from the running container
+rather than typing it:
+
+```bash
 docker compose stop
-docker run --rm -v hermes-data:/data -v "$PWD/backup":/backup alpine \
+VOL="$(docker inspect hermes \
+  --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Name}}{{end}}{{end}}')"
+docker run --rm -v "$VOL:/data:ro" -v "$PWD/backup":/backup alpine \
   sh -c 'cp -a /data/state.db* /data/kanban*.db* /backup/'   # back up FIRST
 # edit docker-compose.yml to the new (or previous) pinned digest
 docker compose up -d
 ```
+
+The indirection is not pedantry. Compose prefixes volume names with the project
+name, so the real volume is `vps-hardened_hermes-data`, not `hermes-data`.
+Passing the short name to `docker run` does not error — it creates a brand new
+empty volume, copies nothing into it, and leaves you holding an empty directory
+you believe is a backup. Resolving from the container's own mounts also
+survives renaming the directory or setting `COMPOSE_PROJECT_NAME`.
 
 Backups are not covered by retention and contain both `.env` secrets and full
 conversation history — store and rotate them as carefully as the live DB.

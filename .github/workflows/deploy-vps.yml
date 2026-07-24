@@ -1,0 +1,212 @@
+name: Deploy VPS
+
+# Rolls a pinned image digest onto the hardened VPS bundle
+# (deploy/vps-hardened/), verifies the result against the security checklist,
+# and rolls back automatically if the checklist fails.
+#
+# Manual dispatch only, on purpose. This deploy touches a box holding plaintext
+# conversation history and live provider credentials; it should be an act, not
+# a side effect of merging. Pair it with a protected `production` environment
+# so a second pair of eyes approves each run.
+#
+# What this workflow deliberately does NOT do:
+#   - It does not create provider credentials. `hermes login` runs once, by
+#     hand, inside the container (BOOTSTRAP.md step 5) so keys never land in
+#     `docker inspect` or a CI log.
+#   - It does not take a Hostinger snapshot. Hostinger keeps one snapshot per
+#     VM and creating one destroys the previous; restoring reverts the whole
+#     disk and loses conversations. Rollback here is "re-pin the previous
+#     digest", which is surgical. See deploy/vps-hardened/hostinger-api.sh.
+#   - It does not touch the Caddyfile or .env. Those hold the auth boundary and
+#     are changed by a human who then re-runs the checklist.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Upstream release tag to deploy (resolved to a digest, e.g. v1.2.3)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Resolve the digest and run the checklist against what is live, but do not deploy'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel a deploy in flight: a half-applied digest swap with the
+# containers down is the one state worse than either version.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: nousresearch/hermes-agent
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check required secrets are present
+        # Fail here with a readable message rather than 40 lines later with an
+        # ssh error that looks like a network problem.
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          DOMAIN: ${{ secrets.HERMES_DOMAIN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for var in SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS DOMAIN; do
+            [ -n "${!var:-}" ] || missing="${missing} ${var}"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repository secret(s):${missing} — see deploy/vps-hardened/BOOTSTRAP.md"
+            exit 1
+          fi
+
+      - name: Resolve image tag to an immutable digest
+        id: resolve
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          # A tag is mutable; the compose file must never carry one. Resolve it
+          # once here and pass only the digest downstream.
+          digest="$(docker buildx imagetools inspect "${IMAGE_REPO}:${IMAGE_TAG}" \
+            --format '{{ .Manifest.Digest }}')"
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::could not resolve a digest for ${IMAGE_REPO}:${IMAGE_TAG}"; exit 1 ;;
+          esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${IMAGE_REPO}:${IMAGE_TAG} -> ${digest}"
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pinned host keys, never StrictHostKeyChecking=no. Without this the
+          # runner would accept whatever answers on that IP, which turns a DNS
+          # or BGP hiccup into "we handed the deploy key to a stranger".
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Record the currently deployed digest
+        id: previous
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          previous="$(ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${SSH_USER}@${SSH_HOST}" 'bash -s -- current' \
+            < deploy/vps-hardened/remote-deploy.sh)"
+          echo "digest=${previous}" >> "$GITHUB_OUTPUT"
+          echo "Currently deployed: ${previous}"
+
+      - name: Deploy
+        if: ${{ !inputs.dry_run }}
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The script is piped from this checkout rather than run from a copy
+          # on the VPS, so the deploy logic is always the reviewed one.
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${SSH_USER}@${SSH_HOST}" "bash -s -- deploy '${DIGEST}'" \
+            < deploy/vps-hardened/remote-deploy.sh
+
+      - name: Verify — public surface (from outside the VPS)
+        id: verify_public
+        env:
+          DOMAIN: ${{ secrets.HERMES_DOMAIN }}
+        run: |
+          set -euo pipefail
+          # Runs on the runner on purpose: checks 1 and 2 model an anonymous
+          # internet client, which is exactly what the runner is.
+          bash deploy/vps-hardened/verify.sh public "$DOMAIN"
+
+      - name: Verify — container posture (on the VPS)
+        id: verify_local
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${SSH_USER}@${SSH_HOST}" 'bash -s -- local' \
+            < deploy/vps-hardened/verify.sh
+
+      - name: Roll back
+        # Fires when the deploy itself failed OR the checklist rejected the
+        # result. A deploy that comes up healthy but serves the dashboard
+        # unauthenticated is worse than one that never came up.
+        if: ${{ failure() && !inputs.dry_run && steps.previous.outputs.digest != '' }}
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT }}
+          PREVIOUS: ${{ steps.previous.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "::warning::deploy or verification failed — rolling back to ${PREVIOUS}"
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "${SSH_USER}@${SSH_HOST}" "bash -s -- rollback '${PREVIOUS}'" \
+            < deploy/vps-hardened/remote-deploy.sh
+          echo "::error::rolled back to ${PREVIOUS}. The database was NOT restored — if the failed image migrated the schema, restore the pre-deploy backup by hand (see remote-deploy.sh)."
+
+      - name: Re-verify after rollback
+        if: ${{ failure() && !inputs.dry_run && steps.previous.outputs.digest != '' }}
+        continue-on-error: true
+        env:
+          DOMAIN: ${{ secrets.HERMES_DOMAIN }}
+        run: bash deploy/vps-hardened/verify.sh public "$DOMAIN"
+
+      - name: Clean up SSH material
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+      - name: Summary
+        if: always()
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          DIGEST: ${{ steps.resolve.outputs.digest }}
+          PREVIOUS: ${{ steps.previous.outputs.digest }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "### VPS deploy"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`${IMAGE_TAG}\` |"
+            echo "| Resolved digest | \`${DIGEST:-unresolved}\` |"
+            echo "| Previous digest | \`${PREVIOUS:-unknown}\` |"
+            echo "| Dry run | ${DRY_RUN} |"
+          } >> "$GITHUB_STEP_SUMMARY"
