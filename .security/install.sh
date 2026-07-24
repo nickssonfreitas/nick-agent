@@ -364,7 +364,11 @@ install_one_python_tool() {
     python3 -m venv "${venv}"
   fi
 
-  "${venv}/bin/python" -m pip install --disable-pip-version-check --no-input --upgrade pip setuptools wheel
+  # Atualiza apenas o pip. Forcar setuptools/wheel para a ultima versao introduz
+  # requisitos de build (ex.: wheel>=0.47 exige packaging>=24) que colidem com os
+  # pins de runtime das ferramentas (checkov fixa packaging==23.2) e fariam o
+  # 'pip check' abaixo abortar o instalador inteiro sob pipefail.
+  "${venv}/bin/python" -m pip install --disable-pip-version-check --no-input --upgrade pip
   "${venv}/bin/python" -m pip install --disable-pip-version-check --no-input --no-cache-dir \
     "${package}==${version}"
   "${venv}/bin/python" -m pip check
@@ -516,9 +520,11 @@ write_environment_file() {
   cat > "${ENV_FILE}" <<EOF_ENV
 #!/usr/bin/env bash
 # Carregue com: source .security/env.sh
+# Nao exporte ZAP_IMAGE aqui: scan.sh o declara como readonly antes de dar
+# source neste arquivo, e reatribuir uma variavel readonly abortaria o scan.
+# Passe ZAP_IMAGE pelo ambiente ao invocar scan.sh, se precisar sobrescrever.
 export HERMES_SECURITY_HOME="${SCRIPT_DIR}"
 export PATH="${BIN_DIR}:\${PATH}"
-export ZAP_IMAGE="${ZAP_IMAGE}"
 EOF_ENV
   chmod 600 -- "${ENV_FILE}"
   log "Criado ${ENV_FILE}."

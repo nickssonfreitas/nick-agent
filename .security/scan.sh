@@ -47,7 +47,9 @@ readonly SOURCE_SNAPSHOT="${TEMP_ROOT}/source"
 readonly FAIL_ON_FINDINGS="${FAIL_ON_FINDINGS:-1}"
 readonly RUN_CODEQL="${RUN_CODEQL:-1}"
 readonly RUN_SHELLCHECK="${RUN_SHELLCHECK:-1}"
-readonly SEMGREP_CONFIG="${SEMGREP_CONFIG:-auto}"
+# 'auto' exige --metrics=on (envia dados do projeto ao registry para escolher
+# regras). Mantemos as metricas desligadas e fixamos um ruleset concreto.
+readonly SEMGREP_CONFIG="${SEMGREP_CONFIG:-p/default}"
 readonly ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable}"
 readonly CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 readonly ZAP_TARGET_URL="${ZAP_TARGET_URL:-}"
@@ -279,10 +281,14 @@ scan_semgrep() {
 scan_bandit() {
   section "Bandit — segurança Python"
   local report="${REPORT_DIR}/bandit.json" stderr="${REPORT_DIR}/bandit.stderr.log" rc
+  # Alvo e exclusoes em caminho absoluto. Com 'bandit -r .' os caminhos saem como
+  # './venv/...' e um -x 'venv' nao casa pelo prefixo './', deixando venv/,
+  # .security/ (venvs dos proprios scanners) e node_modules/ serem varridos.
+  local skip="${PROJECT_ROOT}/.git,${PROJECT_ROOT}/.security,${PROJECT_ROOT}/node_modules"
+  skip+=",${PROJECT_ROOT}/.venv,${PROJECT_ROOT}/venv,${PROJECT_ROOT}/dist,${PROJECT_ROOT}/build"
   set +e
-  (cd "${PROJECT_ROOT}" && bandit -r . \
-    -x '.git,.security/bin,.security/tools,.security/logs,.security/reports,node_modules,.venv,venv,dist,build' \
-    -f json -o "${report}") >"${REPORT_DIR}/bandit.stdout.log" 2>"${stderr}"
+  bandit -r "${PROJECT_ROOT}" -x "${skip}" \
+    -f json -o "${report}" >"${REPORT_DIR}/bandit.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
   classify_json_report bandit "${report}" "${rc}" '(.results // []) | length' "Código Python."
@@ -358,6 +364,8 @@ scan_checkov() {
     --skip-path '^\.git/' \
     --skip-path '^\.security/(bin|tools|logs|reports)/' \
     --skip-path '(^|/)node_modules/' \
+    --skip-path '(^|/)(\.venv|venv)/' \
+    --skip-path '(^|/)(dist|build)/' \
     >"${report}" 2>"${stderr}"
   rc=$?
   set -e
