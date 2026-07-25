@@ -3250,31 +3250,31 @@ DEFAULT_CONFIG = {
         "fresh_final_after_seconds": 0.0,
     },
 
-    # Session storage — controls automatic cleanup of ~/.hermes/state.db.
-    # state.db accumulates every session, message, tool call, and FTS5 index
-    # entry forever.  Without auto-pruning, a heavy user (gateway + cron)
-    # reports 384MB+ databases with 68K+ messages, which slows down FTS5
-    # inserts, /resume listing, and insights queries.
+    # Session storage — automatic cleanup of ~/.hermes/state.db, which
+    # otherwise accumulates every session, message, tool call and FTS5 entry
+    # forever: heavy users (gateway + cron) report 384MB+ DBs with 68K+
+    # messages, slowing FTS5 inserts, /resume listing and insights queries.
     "sessions": {
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
-        # Default false: session history is valuable for search recall, and
-        # silently deleting it could surprise users.  Opt in explicitly.
-        "auto_prune": False,
+        # Default true so transcripts and platform user IDs don't accumulate
+        # forever.  Upgrading never deletes history you already had:
+        # session_retention.py shields everything predating the day retention
+        # first applied here, and says so once.  Opt out with false.
+        "auto_prune": True,
+        # Opt-in to deleting that shielded pre-upgrade backlog as well — the
+        # only switch that lets retention remove history older than the policy.
+        "prune_preexisting": False,
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
         "retention_days": 90,
-        # VACUUM after a prune that actually deleted rows.  SQLite does not
-        # reclaim disk space on DELETE — freed pages are just reused on
-        # subsequent INSERTs — so without VACUUM the file stays bloated
-        # even after pruning.  VACUUM blocks writes for a few seconds per
-        # 100MB, so it only runs at startup, and only when prune deleted
-        # ≥1 session.
+        # VACUUM after a prune that deleted rows.  SQLite reuses freed pages
+        # instead of shrinking the file, so without this the DB stays bloated.
+        # Runs at startup only, and only when ≥1 session was pruned.
         "vacuum_after_prune": True,
-        # Minimum hours between auto-maintenance runs (avoids repeating
-        # the sweep on every CLI invocation).  Tracked via state_meta in
-        # state.db itself, so it's shared across all processes.
+        # Minimum hours between sweeps, tracked in state.db's state_meta so
+        # every process on this HERMES_HOME shares the cadence.
         "min_interval_hours": 24,
         # Legacy per-session JSON snapshot writer.  When true, the agent
         # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn

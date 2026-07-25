@@ -2,14 +2,17 @@
 # hermes-data volume at /opt/data/config.yaml). Apply with DEPLOY.md step 6.
 # These are NOT read from this file directly — it is a reference to copy from.
 
-# Retention is OFF by default: a fresh install keeps every conversation forever
-# (sessions.auto_prune defaults to false). Turn it on explicitly for a
-# personal-data deployment, and run `hermes sessions optimize-storage` once
-# after enabling so the first prune actually VACUUMs pre-existing rows.
+# Retention is ON by default (sessions.auto_prune defaults to true): ended
+# conversations older than retention_days are pruned. Pinning it explicitly
+# here documents the policy for a personal-data deployment. History that
+# predates the day retention first applied to an existing volume is shielded
+# and reported once — set prune_preexisting: true to include it. Run
+# `hermes sessions optimize-storage` once so the first prune actually VACUUMs.
 sessions:
   auto_prune: true
   retention_days: 90
   vacuum_after_prune: true
+  prune_preexisting: false
 
 # MCP servers are third-party code with the same filesystem reach as your user.
 # For EACH server you attach:
