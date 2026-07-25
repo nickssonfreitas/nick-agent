@@ -1,11 +1,13 @@
 # DCF Model Builder - Python Dependencies
 
+# Tetos superiores exigidos pela Dependency Pinning Policy do AGENTS.md.
+
 # Excel file handling
-openpyxl>=3.0.0
+openpyxl>=3.0.0,<4
 
 # HTTP requests
 # Piso em 2.33.0, nao 2.28.0: o scanner avalia o menor valor que o
 # especificador permite, e 2.28.0 (2022) carrega 8 CVEs conhecidas
 # (PYSEC-2023-74, GHSA-9hjg-9r4m-mvj7, GHSA-9wx4-h78v-vm56 entre outras).
 # 2.33.0 e a menor versao que fecha todas; a API e compativel.
-requests>=2.33.0
+requests>=2.33.0,<3
