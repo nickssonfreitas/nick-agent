@@ -490,8 +490,29 @@ scan_npm_audit() {
 scan_osv() {
   section "OSV-Scanner — dependências e lockfiles"
   local report="${REPORT_DIR}/osv-scanner.json" stderr="${REPORT_DIR}/osv-scanner.stderr.log" rc
+  local exclude_args=()
+
+  # Era o unico scanner sem exclusao de caminho, e isso tornava a contagem
+  # nao reproduzivel: no baseline de 2026-07-25, 121 dos 126 findings vinham de
+  # um `node_modules.bak/` transitorio (dois yarn.lock), contra 5 achados reais.
+  # O osv-scanner ja respeita .gitignore, mas la o padrao e `node_modules` sem
+  # barra — casa o diretorio e o symlink, nao variantes como `.bak`/`.old`.
+  #
+  # A flag e `--experimental-*`, entao pode sumir num upgrade. Em vez de fixar
+  # e arriscar quebrar a auditoria inteira (o scan trata falha de ferramenta
+  # como ERROR e invalida o run), so passamos a flag quando ela existe. Se o
+  # osv-scanner remover ou renomear, o scan volta ao comportamento anterior em
+  # vez de falhar — e o unico custo e um numero inflado, nao uma auditoria
+  # perdida.
+  if osv-scanner scan source --help 2>/dev/null | grep -q -- '--experimental-exclude'; then
+    exclude_args=(--experimental-exclude 'g:**/node_modules*')
+  else
+    warn "osv-scanner sem --experimental-exclude; diretorios transitorios podem inflar a contagem."
+  fi
+
   set +e
-  osv-scanner scan source --recursive --format json --output-file "${report}" "${PROJECT_ROOT}" \
+  osv-scanner scan source --recursive "${exclude_args[@]}" \
+    --format json --output-file "${report}" "${PROJECT_ROOT}" \
     >"${REPORT_DIR}/osv-scanner.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
