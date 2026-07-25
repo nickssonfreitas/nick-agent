@@ -577,6 +577,24 @@ reinforced after the Mini Shai-Hulud worm campaign (May 2026).
 
 Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 
+**Never run `npm audit fix --force` on this repository.** Two of the three fixes
+it currently proposes are downgrades of packages the project already runs newer
+versions of — `electron-builder` from 26.15.3 back to 22.14.13, four majors, and
+`react-router-dom` from 7.18 to 7.11 — and in all three advisory cases a patched
+version exists *above* the installed one. Plain `npm audit fix` is fine.
+
+Two related traps worth knowing before touching JS dependencies:
+
+- npm does **not** treat a change to root `overrides` as invalidating an existing
+  `package-lock.json`. Editing `overrides` and running `npm install` silently does
+  nothing; the lock has to be deleted and regenerated for it to apply.
+- Regenerating this lock from scratch is **not** neutral. It resolves differently
+  from the committed one and has dropped packages that are actually needed
+  (`use-effect-event`, required by `@assistant-ui/store`), breaking the
+  `apps/desktop` suite. Prefer `npm ci` and targeted bumps.
+
+Full triage, with the reproduction for each: `.devmind/product/quality/security/SEMGREP-TRIAGE_2026_07_24.md` section 8.
+
 ---
 
 ## Adding Configuration

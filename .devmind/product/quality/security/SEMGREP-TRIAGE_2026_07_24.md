@@ -10,7 +10,8 @@
 | **Confirmed real** | 2 — both fixed |
 | **Minor / hygiene** | 3 — all fixed |
 | **False positives** | 511 |
-| **Remaining open** | ruleset calibration (section 5) only |
+| **Remaining open** | see sections 7 and 8 |
+| **Updated** | 2026-07-25 — sections 7 and 8 extend this beyond semgrep to the rest of the audit (bandit, gitleaks, pip-audit, checkov, npm). Ruleset calibration from section 5 landed in `25b1fe1b5`. |
 
 Every one of the 516 semgrep findings was triaged by reading the flagged code,
 not by pattern-matching the rule name. Two are real defects and are written up
@@ -304,17 +305,123 @@ conflicting.
 
 ## 7. Still open, outside semgrep
 
-- **Root `npm audit`: 23 high.** All devDependencies — the electron-builder and
-  eslint toolchains reached through `minimatch`/`brace-expansion`. `npm audit fix`
-  proposes downgrading `eslint-plugin-react` to a v7-era release that breaks the
-  lint setup, and root `overrides` do not take effect under `--package-lock-only`
-  with workspaces. Needs a deliberate major bump with the JS suite run.
-- **`scripts/whatsapp-bridge`: 1 vulnerability**, not yet inspected.
-- **Bandit: 3.273 findings** after the `tests/` exclusion. Dominated by
-  `B110 try_except_pass` (1.613), which is a robustness smell rather than a
-  vulnerability. Not yet triaged.
-- **Gitleaks: 259 in history** after the vendored-docs allowlist. Mostly test
-  fixtures. `exprted.jsonl` carries 17 `discord-client-id` matches but the file
-  was already removed in `9a19fe1f5` and Discord client ids are public.
+Updated 2026-07-25 against `.security/reports/20260725T123159Z/`. Raw total went
+from 4.476 to 976 across this work; see section 8 for the npm item, which is the
+only one of these that was investigated to a conclusion and still could not be
+closed.
+
+- **Root `npm audit`: 24 entries, 3 root advisories, 1 closable.** Fully
+  triaged — see section 8. Blocked upstream, not by effort.
+- **`scripts/whatsapp-bridge`: closed** in `fe4915c38`.
+- **Bandit: calibrated and triaged.** The published count now covers MEDIUM+HIGH
+  only (`5e2d9e2fb`), which is 293 rather than 3.273; the 2.980 LOW stay in the
+  JSON and are reported in the summary's note column. All 23 `B324` findings were
+  annotated in `2c209b862` — 21 with `usedforsecurity=False` (dedup keys, cache
+  keys, action names, protocol checksums) and 2 with `# nosec B324`, because in
+  `yuanbao_media.py` and `wecom_crypto.py` the SHA1 *is* a security use whose
+  algorithm the remote API dictates, and claiming otherwise would be a false
+  annotation. The 3 remaining HIGH are `B602 shell=True`, all user-supplied
+  commands with a sanitized env.
+- **Gitleaks: 455 → 8**, worktree clean (`5e2d9e2fb`). The allowlist is scoped by
+  `targetRules` to the low-precision rules only; `aws-access-token`, `github-pat`,
+  `stripe-access-token`, `slack-*` and `openai-api-key` stay active everywhere
+  including `tests/`, because a real provider secret in a fixture is still a real
+  leak. Verified with a positive control: real-shaped AWS, GitHub, Stripe and
+  Slack tokens injected under `tests/` were all still detected. `private-key` was
+  not released by path — only the two sites verified individually. Every GitHub
+  PAT-shaped string in history was traced and all are synthetic fixtures
+  (`ghp_abcdef123…`, `ghp_xxxx…`); nothing to rotate.
+  - Known gap: an AWS *secret* access key pasted into `tests/` would be missed,
+    because gitleaks has no dedicated rule for it (40 base64 chars are
+    indistinguishable from anything) and it would fall to `generic-api-key`,
+    which is allowlisted there. The paired `AKIA…` id does still fire.
+- **pip-audit was auditing 59 of 227 packages and reporting `clean`**
+  (`6615d243d`). It fell through to the `pyproject.toml` branch, which resolves
+  base dependencies only, while this project documents installation as
+  `.[all,dev]` — 41 extras. The locked set with all extras carries pynacl 1.5.0
+  and setuptools 81.0.0. Those were never invisible, because osv-scanner reads
+  `uv.lock` on its own, but a green pip-audit covering a quarter of the installed
+  surface is worse than no scanner.
+- **`CKV_GHA_7` on four workflows: suppressed with justification**
+  (`e893c6e92`, `851ebceb5`). Audited before suppressing: the rule's real vector
+  is `${{ inputs.X }}` interpolated into a `run:` block, and none of the four do
+  that — all pass through `env:`. A sweep of `.github/workflows` confirmed no
+  attacker-controlled free-text field (`pull_request` title/body/head_ref,
+  issue/comment body) reaches a `run:`, and there is no `pull_request_target`
+  trigger anywhere.
 - **CodeQL is `skipped`** — not installed for this architecture. Confirm whether
-  that is intentional or a coverage gap.
+  that is intentional or a coverage gap. Still open.
+
+---
+
+## 8. npm audit — triaged, and why `npm audit fix --force` must not be run
+
+> **Do not run `npm audit fix --force` on this repository.** Two of the three
+> fixes it proposes are downgrades of currently-newer packages, and the third
+> breaks the lint setup. Details below.
+
+The 23 entries (24 in the `20260725T123159Z` report, before `fe4915c38`) are
+**3 root advisories**; the other 20 are the same two packages propagating through
+`eslint`, `electron-builder`, `glob`, `minimatch` and `rimraf`. Counting 23
+overstates the problem by roughly 8x.
+
+### What npm proposes vs. what is actually available
+
+| Package | Installed | npm's `fixAvailable` | Actually patched in |
+|---------|-----------|----------------------|---------------------|
+| `brace-expansion` | 1.1.16 / 2.1.2 / 5.0.7 | (via parent downgrades) | 5.0.8 |
+| `postcss` | 8.5.15 | — | 8.5.23 |
+| `react-router` | 7.18.0 | `react-router-dom@7.11.0` ⬇ | 8.3.0 |
+| `electron-builder` | 26.15.3 | `22.14.13` ⬇ | n/a (transitive only) |
+| `eslint` | 9.39.4 | `10.8.0` ⬆ | n/a (transitive only) |
+
+`electron-builder` and `react-router-dom` are proposed as **downgrades** from
+versions the project already runs — electron-builder by four major versions, from
+26.15.3 back to 22.14.13. `eslint@10.8.0` is a genuine upgrade. In all three
+advisory cases a patched version exists *above* the current one, so `--force`
+would regress dependencies to "fix" something that already has a patch.
+
+Values verified 2026-07-25 against the committed lockfile; `fixAvailable` drifts
+as advisories are updated, so re-check before acting on this table.
+
+### `brace-expansion` — no usable fix (blocked upstream)
+
+The advisory (GHSA-mh99-v99m-4gvg) covers `<=5.0.7` with no backport, so 5.0.8 is
+the only patched release. Forcing it via `overrides` **breaks ESLint**:
+
+```
+TypeError: expand is not a function
+  at Minimatch.braceExpand (node_modules/@eslint/config-array/node_modules/minimatch/minimatch.js:271:10)
+```
+
+v1 exported the function directly (`module.exports = expand`); v5 changed the
+export shape, and the `minimatch@3.x` vendored under `@eslint/config-array` calls
+the result of `require('brace-expansion')` directly. ESLint exits 2 and does not
+run. Verified 2026-07-25.
+
+Resolution: wait for eslint and electron-builder to bump their `minimatch`. The
+exposure is a DoS in build tooling, not in distributed runtime.
+
+### `postcss` — fixable in principle, too expensive in practice
+
+8.5.23 closes it and the web suite passes with it. The blocker is the mechanism:
+**npm does not treat a change to `overrides` as invalidating an existing
+lockfile**, so the override only takes effect if `package-lock.json` is deleted
+and regenerated. Regenerating this lock from scratch is not neutral — it dropped
+29 packages including `node_modules/use-effect-event`, which `@assistant-ui/store`
+imports, breaking 11 test files in `apps/desktop`. Not worth it for a build-time
+path traversal.
+
+> Corrects the earlier note in section 7: root `overrides` **do** apply under
+> workspaces. Verified with an isolated two-package workspace repro where the
+> override resolved correctly. The blocker is the pre-existing lockfile, not
+> workspaces. Note also that npm does not record `overrides` in the lock's root
+> entry even when they are applied, so that field is not a usable signal.
+
+### `react-router` — not applicable
+
+GHSA-qwww-vcr4-c8h2 affects RSC mode only. Both consumers (`web`,
+`apps/desktop`) use declarative mode: `<BrowserRouter>` in `web/src/main.tsx`, no
+`react-router.config.*`, no `@react-router/*` framework package, and no RSC API
+anywhere in the source. Accepted with justification; the proposed downgrade to
+7.11.0 would be a regression for no gain.
