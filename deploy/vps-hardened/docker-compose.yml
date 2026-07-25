@@ -17,7 +17,7 @@
 services:
   gateway:
     # Resolve a real digest first (see DEPLOY.md step 2) and replace this.
-    image: nousresearch/hermes-agent@sha256:REPLACE_WITH_PINNED_DIGEST
+    image: ghcr.io/nickssonfreitas/nick-agent@sha256:REPLACE_WITH_PINNED_DIGEST
     container_name: hermes
     restart: unless-stopped
     networks: [hermes-internal]
@@ -47,7 +47,7 @@ services:
         reservations: { cpus: "0.25", memory: 256m }
 
   dashboard:
-    image: nousresearch/hermes-agent@sha256:REPLACE_WITH_PINNED_DIGEST
+    image: ghcr.io/nickssonfreitas/nick-agent@sha256:REPLACE_WITH_PINNED_DIGEST
     container_name: hermes-dashboard
     restart: unless-stopped
     networks: [hermes-internal]

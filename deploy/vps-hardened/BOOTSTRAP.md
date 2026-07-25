@@ -8,6 +8,7 @@ manual, everything that moves an image digest gets automated.**
 | Phase | Runs | How | Frequency |
 |---|---|---|---|
 | Bootstrap | by hand, over SSH | this file | once per VPS |
+| Build image | in CI, on request | `.github/workflows/publish-image.yml` | per version deployed |
 | Deploy | in CI | `.github/workflows/deploy-vps.yml` | every release |
 | Verify | in CI and by hand | `verify.sh` | every deploy |
 | Rollback | in CI, automatic on a failed check | `remote-deploy.sh rollback` | on failure |
@@ -62,6 +63,48 @@ and `VPS_setRootPasswordV1` on the box it is running on. Run it from your
 laptop, pointed at the VPS from outside.
 
 ---
+
+## Step 0a — Publish the image, once
+
+The deploy needs an image that contains **this fork's** code. Upstream's
+`nousresearch/hermes-agent` does not: the fork carries the dashboard CSP
+(`hermes_cli/web_server.py`) and the credential-mode clamp
+(`hermes_cli/config.py`), and `DEPLOY.md`'s whole posture assumes both are
+present. Deploying upstream's image would give you hardened configuration around
+unhardened code, and `verify.sh` check 6 would reject it — correctly.
+
+```bash
+gh workflow run publish-image.yml
+gh run watch                     # builds, runs tests/docker/, then pushes
+```
+
+It publishes to `ghcr.io/nickssonfreitas/nick-agent` and prints a `sha-<short>`
+tag in the run summary. That tag is what you feed to the deploy. It authenticates
+with the workflow's own `GITHUB_TOKEN`, so there is no registry secret to create.
+
+The image is gated on the `tests/docker/` suite passing against the exact bytes
+that get pushed, which is why the run takes a while. Publishing first and testing
+after would ship a broken image and then tell you about it.
+
+## Step 0b — Make the package pullable from the VPS
+
+On the first publish, check the package's visibility at
+`https://github.com/nickssonfreitas/nick-agent/pkgs/container/nick-agent`.
+
+**Public** is the simple path and is safe here: the image is built from public
+source and holds no credentials — provider keys live in the volume at runtime
+(step 5), never in a layer. The VPS then pulls with no login at all.
+
+**Private** works too, but the VPS needs a read-only credential:
+
+```bash
+# on the VPS, with a PAT scoped to read:packages only
+echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u nickssonfreitas --password-stdin
+```
+
+That writes `~/.docker/config.json` on the box. It is a fourth place holding a
+secret, on the machine you are trying to keep tight — which is the argument for
+public unless you have a reason.
 
 ## Step 0 — Prerequisites
 
