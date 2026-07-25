@@ -48,13 +48,29 @@ cannot close for you.
 
 ## Step 2 — Pin the image digest
 
-`:latest` is mutable. Resolve a real digest for a versioned release and pin it:
+The image is **this fork's**, `ghcr.io/nickssonfreitas/nick-agent`, built by
+`.github/workflows/publish-image.yml`. Not upstream's
+`nousresearch/hermes-agent`: this fork carries the code-layer security fixes
+this document's posture assumes — the dashboard CSP in
+`hermes_cli/web_server.py` and the credential-mode clamp in
+`hermes_cli/config.py`. Deploying the upstream image would wrap hardened
+configuration around unhardened code, and `verify.sh` check 6 would fail on it.
+
+`:latest` is mutable. Resolve a real digest and pin it:
 
 ```bash
-docker buildx imagetools inspect nousresearch/hermes-agent:<release-tag>
+docker buildx imagetools inspect ghcr.io/nickssonfreitas/nick-agent:<tag>
 # copy the top-level digest, then in docker-compose.yml replace both
 # REPLACE_WITH_PINNED_DIGEST occurrences with:  sha256:<digest>
 ```
+
+Publish a tag first if none exists (`gh workflow run publish-image.yml`). Prefer
+the `sha-<short>` tag it emits over a branch tag: it names one commit, so a
+rollback target still means something months later.
+
+After this, CI moves the digest for you — `remote-deploy.sh` rewrites both
+`image:` lines together. This step exists only because the pipeline cannot
+create the first pin.
 
 ## Step 3 — Generate the dashboard password hash
 
@@ -62,7 +78,7 @@ Never ship a plaintext password. Generate a scrypt hash offline and put it in
 `.env`:
 
 ```bash
-docker run --rm nousresearch/hermes-agent@sha256:<digest> \
+docker run --rm ghcr.io/nickssonfreitas/nick-agent@sha256:<digest> \
   python3 -c "from plugins.dashboard_auth.basic import hash_password; import getpass; print(hash_password(getpass.getpass('password: ')))"
 ```
 

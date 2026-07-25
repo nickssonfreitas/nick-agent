@@ -35,6 +35,9 @@ on:
 
 permissions:
   contents: read
+  # Resolving a tag to a digest reads the GHCR package. Public packages need no
+  # auth, but this keeps the workflow working if you keep the image private.
+  packages: read
 
 # Never cancel a deploy in flight: a half-applied digest swap with the
 # containers down is the one state worse than either version.
@@ -43,7 +46,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REPO: nousresearch/hermes-agent
+  # This fork's own image, not upstream's. The fork carries code-layer security
+  # fixes (CSP in hermes_cli/web_server.py, the credential-mode clamp in
+  # hermes_cli/config.py) that the upstream image does not have, and DEPLOY.md's
+  # posture assumes they are present. Built by publish-image.yml.
+  IMAGE_REPO: ghcr.io/${{ github.repository }}
 
 jobs:
   deploy:
@@ -74,6 +81,13 @@ jobs:
             echo "::error::missing repository secret(s):${missing} — see deploy/vps-hardened/BOOTSTRAP.md"
             exit 1
           fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve image tag to an immutable digest
         id: resolve
