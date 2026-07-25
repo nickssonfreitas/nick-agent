@@ -399,8 +399,74 @@ export shape, and the `minimatch@3.x` vendored under `@eslint/config-array` call
 the result of `require('brace-expansion')` directly. ESLint exits 2 and does not
 run. Verified 2026-07-25.
 
+A second attempt on 2026-07-25 went further and still failed, but narrowed the
+problem precisely. The fix is not to override `brace-expansion`, it is to override
+its consumer: `minimatch@10.2.5` depends on `brace-expansion ^5.0.5` and uses the
+new export shape, while the seven `minimatch@3.1.5` copies in the tree pin
+`^1.1.7`. Overriding `minimatch` to `^10.2.5` does close it, and ESLint runs
+clean — **but it breaks Electron packaging**, which no test covers:
+
+```
+TypeError: (0 , mm.default) is not a function
+```
+
+`@electron/asar` and `dir-compare` both do
+`__importDefault(require("minimatch"))` and then call `.default(...)`. minimatch
+v3 is a callable module so the shim wraps it; v10 sets `__esModule` and exposes
+no `default`, so the call dies. The full JS suite was green at that point — the
+regression only surfaces at package time.
+
+A scoped override does work: `minimatch: ^10.2.5` globally, with nested
+`{"@electron/asar": {"minimatch": "^3.1.2"}}` and the same for `dir-compare`.
+Every remaining consumer was checked by hand against v10 rather than assumed —
+`@electron/universal` and `@eslint/*` use named imports, `filelist` uses
+`minimatch.match()`, all fine; `glob@7.2.3` pins `^3.1.1` and calls the module
+directly, so it stays on 3.x too. That configuration takes `npm audit` from 23
+entries to 15 and leaves `brace-expansion@1.1.16` only under asar, dir-compare
+and glob.
+
+It was **not** adopted, because applying it requires regenerating the lock — see
+the next subsection for why that is currently unsafe.
+
 Resolution: wait for eslint and electron-builder to bump their `minimatch`. The
 exposure is a DoS in build tooling, not in distributed runtime.
+
+### The lockfile cannot currently be regenerated (blocks all of the above)
+
+This is the more important finding, and it is independent of any security work.
+**`rm package-lock.json && npm install` produces a broken tree in this repo.** A
+fresh resolve keeps `@assistant-ui/*` at the same versions but silently omits
+their dependencies:
+
+| Package | Declared by | Present in committed lock | After fresh resolve |
+|---------|-------------|---------------------------|---------------------|
+| `use-effect-event@2.0.3` | `@assistant-ui/store@0.2.19` | yes | dropped |
+| `assistant-stream@0.3.24` | `@assistant-ui/core@0.14.24` | yes | dropped |
+| `assistant-cloud@0.1.34` | (peer) | yes | dropped |
+
+The result fails at runtime with `Cannot find package 'assistant-stream' imported
+from apps/desktop/node_modules/@assistant-ui/core/...`, taking out 11 test files
+in `apps/desktop`. Reproduced with and without any override change, so it is not
+caused by the overrides; it is a resolver bug that the committed lock happens to
+predate. npm emits no warning, there is no peer conflict (`use-effect-event`
+peers on `react ^18.3 || ^19.0.0-0` and the tree has 19.2.8), all three packages
+are published, and a second `npm install` pass does not repair it. Declaring the
+dropped packages explicitly in `apps/desktop/package.json` fixes them one at a
+time, but each fresh resolve surfaces another, so that is whack-a-mole rather
+than a fix.
+
+**Practical consequences, independent of the security items:**
+
+- Use `npm ci`. Never delete `package-lock.json` to "refresh" it.
+- A dependabot or renovate job that regenerates the lock wholesale will ship a
+  broken desktop app. Restrict them to targeted bumps.
+- Resolving a lockfile merge conflict by regenerating has the same effect. Take
+  one side and re-run `npm ci` instead.
+- Any `overrides`-based remediation is blocked until this is fixed, because
+  overrides only apply to a freshly resolved lock.
+
+Worth an upstream report against npm (11.6.2) with the `@assistant-ui/*` tree as
+the reproduction.
 
 ### `postcss` — fixable in principle, too expensive in practice
 

@@ -585,13 +585,20 @@ version exists *above* the installed one. Plain `npm audit fix` is fine.
 
 Two related traps worth knowing before touching JS dependencies:
 
+- **Never delete `package-lock.json` to regenerate it. Use `npm ci`.** A fresh
+  resolve silently drops dependencies that `@assistant-ui/*` declares —
+  `use-effect-event`, `assistant-stream`, `assistant-cloud` — producing a tree
+  that fails with `Cannot find package 'assistant-stream'` and takes out 11 test
+  files in `apps/desktop`. npm gives no warning, there is no peer conflict, and a
+  second install pass does not repair it. This applies to lockfile merge
+  conflicts too: take one side and re-run `npm ci` rather than regenerating.
+  Bots that refresh the whole lock (dependabot, renovate) must be kept to
+  targeted bumps.
 - npm does **not** treat a change to root `overrides` as invalidating an existing
   `package-lock.json`. Editing `overrides` and running `npm install` silently does
-  nothing; the lock has to be deleted and regenerated for it to apply.
-- Regenerating this lock from scratch is **not** neutral. It resolves differently
-  from the committed one and has dropped packages that are actually needed
-  (`use-effect-event`, required by `@assistant-ui/store`), breaking the
-  `apps/desktop` suite. Prefer `npm ci` and targeted bumps.
+  nothing; the lock has to be deleted and regenerated for it to apply — which the
+  previous point rules out. Any `overrides`-based remediation is blocked until the
+  resolver bug is fixed.
 
 Full triage, with the reproduction for each: `.devmind/product/quality/security/SEMGREP-TRIAGE_2026_07_24.md` section 8.
 
