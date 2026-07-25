@@ -741,14 +741,27 @@ def main() -> int:
         "--cov",
         metavar="TARGET",
         help=(
-            "Measure coverage of TARGET (e.g. 'gateway' or 'gateway.run') across "
+            "Measure coverage of TARGET (a module path, e.g. 'gateway.run') across "
             "the run, then combine and report. Opt-in and local-only — CI does not "
             "pass this and there is no coverage gate. "
             "This is OUR flag, not a passthrough to pytest, because coverage needs "
             "lifecycle management the bare flag can't do: one pytest subprocess per "
             "test file means one coverage data file per test file, and they must be "
             "given distinct COVERAGE_FILE paths and then combined. Passing --cov "
-            "straight to pytest would have every subprocess race on one .coverage."
+            "straight to pytest would have every subprocess race on one .coverage. "
+            "KNOWN LIMITATION: coverage.py's `source` targeting imports TARGET at "
+            "session start to instrument it, and importing gateway.run bridges "
+            "config into os.environ at import time. That pre-import perturbs tests "
+            "which assert on that bridging: `tests/gateway/ --cov=gateway.run` "
+            "reports ~63 failures across 21 files (test_config.py, "
+            "test_display_config.py, the platform-gating tests, …) that all pass "
+            "with the flag off. The COVERAGE NUMBERS ARE STILL VALID — the other "
+            "~9,960 tests ran and were measured — but treat failures in a --cov run "
+            "as suspect until reproduced without it. Measured, not guessed: 0 "
+            "failures without the flag, 63 with it, and the repro line printed for "
+            "each failing file names --cov explicitly. Filesystem-path targeting "
+            "(--cov=gateway/run.py) avoids the pre-import but silently measures "
+            "nothing, so it is not a workaround."
         ),
     )
     parser.add_argument(
