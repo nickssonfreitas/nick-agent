@@ -363,6 +363,26 @@ scan_pip_audit() {
   if [[ -f "${PROJECT_ROOT}/pylock.toml" ]]; then
     args+=(--locked --strict "${PROJECT_ROOT}")
     mode="pylock.toml via --locked"
+  elif [[ -f "${PROJECT_ROOT}/uv.lock" ]] && command_exists uv; then
+    # Auditar `pyproject.toml` direto resolve so as dependencias base e ignora
+    # os extras, que e onde mora quase tudo: o caminho de instalacao que a doc
+    # manda usar e `.[all,dev]`, com 41 extras. Na medicao de 2026-07-25 isso
+    # significava auditar 59 pacotes e reportar 'clean', enquanto o conjunto
+    # travado com todos os extras tem 227 pacotes e 3 vulnerabilidades
+    # (pynacl 1.5.0, setuptools 81.0.0) — que so apareciam porque o
+    # osv-scanner le o uv.lock por conta propria. Um 'clean' cobrindo um
+    # quarto da superficie instalada e pior que nenhum relatorio.
+    local lock_req="${TEMP_ROOT}/uv-lock-requirements.txt"
+    if uv export --directory "${PROJECT_ROOT}" --format requirements-txt \
+         --all-extras --no-emit-project -o "${lock_req}" >/dev/null 2>>"${stderr}"; then
+      args+=(--requirement "${lock_req}")
+      mode="uv.lock via uv export --all-extras"
+    else
+      # Fallback silencioso invalidaria o relatorio: o modo fica registrado na
+      # coluna Observacao para que o recorte reduzido seja visivel.
+      args+=("${PROJECT_ROOT}")
+      mode="pyproject.toml (uv export falhou; extras fora do escopo)"
+    fi
   elif [[ -f "${PROJECT_ROOT}/requirements.txt" ]]; then
     args+=(--requirement "${PROJECT_ROOT}/requirements.txt")
     mode="requirements.txt"
