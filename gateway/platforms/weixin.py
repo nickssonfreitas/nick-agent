@@ -178,13 +178,18 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # ECB e ditado pelo CDN de midia do Weixin, nao escolhido aqui: a chave vem
+    # da propria API (aeskey_hex no upload, aes_key_b64 no download) e o
+    # servidor decifra em ECB. Trocar o modo produz upload ilegivel. Mesmo
+    # tratamento dado ao SHA1 de assinatura em wecom_crypto.py.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305 - modo exigido pelo CDN do Weixin
     encryptor = cipher.encryptor()
     return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
 
 
 def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # Ver a nota em _aes128_ecb_encrypt: modo imposto pelo protocolo do CDN.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305 - modo exigido pelo CDN do Weixin
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
     if not padded:
