@@ -2,6 +2,13 @@ name: Publish to PyPI
 
 # Triggered by CalVer tag pushes from scripts/release.py (e.g. v2026.5.15)
 # Can also be triggered manually from the Actions tab as an escape hatch.
+#
+# checkov:skip=CKV_GHA_7:O escape hatch manual exige a tag alvo, e o input nao
+# alcanca nenhum bloco run: — chega em `ref:` do checkout e, na validacao, via
+# `env: CONFIRM_TAG`, nunca interpolado no texto do script. A tag e verificada
+# com `git tag -l` antes de qualquer build ou publish, e disparar o workflow ja
+# exige write no repo (quem tem isso pode empurrar uma tag de qualquer jeito).
+# Zerar os inputs so removeria o escape hatch, sem fechar vetor algum.
 on:
   push:
     tags:

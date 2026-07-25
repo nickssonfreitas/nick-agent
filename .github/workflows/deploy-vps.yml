@@ -19,6 +19,13 @@ name: Deploy VPS
 #     digest", which is surgical. See deploy/vps-hardened/hostinger-api.sh.
 #   - It does not touch the Caddyfile or .env. Those hold the auth boundary and
 #     are changed by a human who then re-runs the checklist.
+#
+# checkov:skip=CKV_GHA_7:O deploy e manual por desenho (ver o cabecalho acima), e
+# `image_tag` e exatamente o que o operador precisa escolher: qual release rolar.
+# O input chega via `env: IMAGE_TAG`, nunca interpolado em bloco run:, e a tag e
+# resolvida para um digest antes de qualquer coisa tocar o host. O job roda sob
+# `environment: production`, entao um segundo par de olhos aprova cada execucao.
+# Zerar os inputs deixaria o workflow sem como escolher o que deployar.
 
 on:
   workflow_dispatch:
