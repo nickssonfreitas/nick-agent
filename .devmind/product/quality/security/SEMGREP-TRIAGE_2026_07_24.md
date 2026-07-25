@@ -7,9 +7,10 @@
 | **Ruleset** | `p/default` |
 | **Branch** | `dev` / `security/harden-gates-and-privacy` |
 | **Findings triaged** | 516 of 516 |
-| **Confirmed real** | 2 |
-| **Minor / hygiene** | 3 |
+| **Confirmed real** | 2 — both fixed |
+| **Minor / hygiene** | 3 — all fixed |
 | **False positives** | 511 |
+| **Remaining open** | ruleset calibration (section 5) only |
 
 Every one of the 516 semgrep findings was triaged by reading the flagged code,
 not by pattern-matching the rule name. Two are real defects and are written up
@@ -25,7 +26,11 @@ re-litigate them.
 **File:** `scripts/whatsapp-bridge/allowlist.js:22`
 **Rule:** `path-join-resolve-traversal`
 **Severity:** Medium (security boundary), Low exploitability
-**Status:** OPEN
+**Status:** **FIXED** — `c0d116051`. Guard anchored in `readMappingFile` (not in
+the normalizer, so a future caller cannot route around it) plus a regression
+test that plants a mapping file outside `sessionDir` and asserts no traversal
+resolves an alias. The 5 pre-existing tests still pass, so legitimate
+LID↔phone mapping did not regress.
 
 ### What is wrong
 
@@ -100,7 +105,12 @@ home. Assert that `matchesAllowedUser('../../../etc/passwd', ...)` returns
 **File:** `web/src/lib/nested.ts` (`setNestedValue`, and `getNestedValue`)
 **Rule:** `prototype-pollution-loop`
 **Severity:** Medium
-**Status:** OPEN
+**Status:** **FIXED** — `754df91c6`. The desktop guards were ported rather than
+reinvented, so the two implementations stay recognisably the same thing.
+`getNestedValue` now also requires `hasOwnProperty`, so a lookup no longer
+returns an inherited prototype property as if it were config. Verified with 6
+new tests and a clean `npm run check` on the `web` workspace (typecheck + 103
+tests across 18 files).
 
 ### What is wrong
 
@@ -160,11 +170,32 @@ better, extracting one shared helper — prevents the next divergence.
 
 ## 3. Hygiene items (no exploit path)
 
-| ID | File | Rule | Action |
-|----|------|------|--------|
-| SEM-003 | `skills/creative/p5js/templates/viewer.html:28` | `missing-integrity` | Add SRI `integrity` + `crossorigin` to the cdnjs `p5.min.js` tag, or vendor the file. Supply-chain hardening on a third-party CDN. |
-| SEM-004 | `.github/dependabot.yml:26` | `dependabot-missing-cooldown` | Add a `cooldown:` to the `github-actions` ecosystem so a compromised release is not auto-proposed within minutes of publication. |
-| SEM-005 | 6 sites (see below) | `insecure-hash-algorithm-sha1` | Pass `usedforsecurity=False` to the `hashlib.sha1`/`md5` calls. Cosmetic and compliance-only — every use is protocol-mandated or a cache/dedup digest. Also closes ~24 Bandit `B324` findings in one pass. |
+| ID | File | Rule | Action | Status |
+|----|------|------|--------|--------|
+| SEM-003 | `skills/creative/p5js/templates/viewer.html:28` | `missing-integrity` | Add SRI `integrity` + `crossorigin` to the cdnjs `p5.min.js` tag. | **DONE** — `5fa3cd3ac` |
+| SEM-004 | `.github/dependabot.yml:26` | `dependabot-missing-cooldown` | Add a `cooldown:` to the `github-actions` ecosystem so a compromised release is not auto-proposed within minutes of publication. | **DONE** — `5fa3cd3ac` |
+| SEM-005 | 6 sites (see below) | `insecure-hash-algorithm-sha1` | Pass `usedforsecurity=False` to the `hashlib.sha1`/`md5` calls. Cosmetic and compliance-only — every use is protocol-mandated or a cache/dedup digest. Also closes 23 Bandit `B324` findings in one pass. | **DONE** (see note) |
+
+**SEM-005 note (added 2026-07-25).** This item was already remediated in the
+working tree by parallel work, not by this triage pass. All 23 Bandit `B324`
+sites now carry `usedforsecurity=False`, and the two protocol-signature sites
+(`wecom_crypto.py:63`, `yuanbao_media.py:331`) carry `# nosec B324` with a
+reason instead — the correct distinction, because there SHA1 *is* the security
+mechanism and the algorithm is dictated by the WeCom and Yuanbao schemes.
+Re-running Bandit over those files returns **B324 = 0**.
+
+The 23 findings in the `20260724T222854Z` report therefore reflect the HEAD at
+scan time, not the current code. Bandit 1.9.4 honours the flag correctly —
+verified against an isolated case where it ignores the annotated call and flags
+the bare one.
+
+SEM-003 hash provenance: the `sha512` was verified two independent ways, against
+the value `api.cdnjs.com` publishes and against a digest computed locally over
+the downloaded file. Bumping the p5 version requires regenerating it.
+
+The other CDN references under `skills/creative/p5js/references/*.md` were left
+alone deliberately: they are documentation snippets rather than executed
+templates, and several pin `@latest`, which cannot carry an SRI hash.
 
 SEM-005 sites: `agent/codex_responses_adapter.py:236`,
 `gateway/platforms/msgraph_webhook.py:380`,
@@ -237,7 +268,23 @@ justification.
 
 ---
 
-## 6. Suggested execution order
+## 6. Execution log
+
+All five items are closed. Recorded here because the commit messages carry the
+reasoning and this table is the index into them.
+
+| Item | Commit | What landed |
+|------|--------|-------------|
+| SEM-002 | `754df91c6` | Desktop guards ported to `web/src/lib/nested.ts` + 6 tests |
+| SEM-001 | `c0d116051` | `SAFE_IDENTIFIER` guard in `readMappingFile` + traversal regression test |
+| SEM-003 / SEM-004 | `5fa3cd3ac` | SRI on the p5 CDN tag, `cooldown: 7` on dependabot |
+| SEM-005 | — | Already remediated in parallel work; see the note in section 3 |
+
+SEM-001 and SEM-002 landed as separate commits on purpose: they touch different
+workspaces (`scripts/whatsapp-bridge/` and `web/`) and neither depends on the
+other, so either can be reverted alone.
+
+### Original suggested order (kept for reference)
 
 1. **SEM-002** — smallest diff, the fix already exists in `apps/desktop` and only
    needs porting. Add a unit test asserting `__proto__.x` throws.
