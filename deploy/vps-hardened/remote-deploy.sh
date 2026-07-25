@@ -24,8 +24,16 @@ set -euo pipefail
 
 DEPLOY_DIR="${HERMES_DEPLOY_DIR:-/opt/hermes/vps-hardened}"
 BACKUP_ROOT="${HERMES_BACKUP_DIR:-/opt/hermes/backups}"
-IMAGE_REPO="${HERMES_IMAGE_REPO:-nousresearch/hermes-agent}"
+# This fork's image (publish-image.yml), not upstream's — the fork carries the
+# code-layer security fixes DEPLOY.md's posture assumes. Override for a
+# different registry.
+IMAGE_REPO="${HERMES_IMAGE_REPO:-ghcr.io/nickssonfreitas/nick-agent}"
 HEALTH_TIMEOUT="${HERMES_HEALTH_TIMEOUT:-180}"
+
+# The repo name goes into grep -E and sed patterns, where `.` and `/` in
+# `ghcr.io/owner/name` would otherwise be regex metacharacters. Escaping keeps
+# the match literal instead of letting `ghcr.io` also match `ghcrXio`.
+IMAGE_REPO_RE="$(printf '%s' "$IMAGE_REPO" | sed 's/[.[\*^$]/\\&/g')"
 
 log()  { printf '[deploy] %s\n' "$*"; }
 die()  { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -46,8 +54,8 @@ require_digest() {
 # `set -e` with `pipefail`, a no-match grep here would kill the script at the
 # assignment and swallow the "not pinned yet" message the caller wants to show.
 current_digest() {
-  { grep -oE "${IMAGE_REPO}@sha256:[0-9a-f]{64}" "$DEPLOY_DIR/docker-compose.yml" || true; } \
-    | head -n 1 | sed "s|^${IMAGE_REPO}@||"
+  { grep -oE "${IMAGE_REPO_RE}@sha256:[0-9a-f]{64}" "$DEPLOY_DIR/docker-compose.yml" || true; } \
+    | head -n 1 | sed "s|^${IMAGE_REPO_RE}@||"
 }
 
 # Compose prefixes volume names with the project name, so the volume is
@@ -90,7 +98,7 @@ apply_digest() {
   local digest="$1"
   # Both services (gateway and dashboard) must move together — they share the
   # same volume and a split-version pair is an unsupported state.
-  sed -i -E "s|${IMAGE_REPO}@sha256:[0-9a-f]{64}|${IMAGE_REPO}@${digest}|g" \
+  sed -i -E "s|${IMAGE_REPO_RE}@sha256:[0-9a-f]{64}|${IMAGE_REPO}@${digest}|g" \
     "$DEPLOY_DIR/docker-compose.yml"
   local applied
   applied="$(current_digest)"
