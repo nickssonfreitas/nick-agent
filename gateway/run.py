@@ -19359,76 +19359,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-platform display settings — resolve via display_config module
         # which checks display.platforms.<platform>.<key> first, then
         # display.<key> global, then built-in platform defaults.
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import (
+            resolve_display_setting,
+            resolve_surface_mode,
+            resolve_turn_display_config,
+        )
 
-        # Apply tool preview length config (0 = no limit)
+        # Every display/verbosity setting this turn needs, resolved once. See
+        # gateway/display_config.py for the precedence rules — notably that
+        # HERMES_TOOL_PROGRESS_MODE is a fallback, not an override.
+        _display = resolve_turn_display_config(user_config, source.platform, platform_key)
+
+        # Apply tool preview length config (0 = no limit).
+        # These two setters mutate PROCESS-GLOBAL state in agent.display that is
+        # read much later, inside progress_callback. They stay here, at this
+        # exact point in the turn, so the mutation timing is unchanged by the
+        # extraction — only the values now come from the resolved config.
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
-            set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+            set_tool_preview_max_len(_display.tool_preview_length)
         except Exception:
             pass
 
         # Apply friendly tool labels config (default on) — per-platform aware
         try:
             from agent.display import set_friendly_tool_labels
-            _ftl = resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True)
-            set_friendly_tool_labels(bool(_ftl))
+            set_friendly_tool_labels(_display.friendly_tool_labels)
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _display_cfg = display_config if isinstance(display_config, dict) else {}
-        _platforms_cfg = _display_cfg.get("platforms") or {}
-        _platform_cfg = _platforms_cfg.get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = (
-            "tool_progress" in _display_cfg
-            or (
-                isinstance(_platform_cfg, dict)
-                and "tool_progress" in _platform_cfg
-            )
-            or (
-                isinstance(_legacy_tp_overrides, dict)
-                and platform_key in _legacy_tp_overrides
-            )
-        )
-        progress_mode = (
-            _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
-        )
-        # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_mode = _display.progress_mode
+        progress_grouping = _display.progress_grouping
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
-
-        def _display_surface_mode(
-            setting: str,
-            *,
-            default: bool = False,
-            require_platform_override_for: set[Any] | None = None,
-            allow_generic: bool = False,
-        ) -> str:
-            """Return off|raw|generic for a gateway visibility surface."""
-            if require_platform_override_for:
-                current_platform = _gateway_platform_value(source.platform)
-                platform_only = {
-                    _gateway_platform_value(item)
-                    for item in require_platform_override_for
-                }
-                if (
-                    current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
-                ):
-                    return "off"
-            value = resolve_display_setting(user_config, platform_key, setting, default)
-            if isinstance(value, str) and value.strip().lower() == "generic":
-                return "generic" if allow_generic else "off"
-            return "raw" if bool(value) else "off"
 
         def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
             try:
@@ -19443,52 +19407,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _phrase_err:
                 logger.debug("generic status phrase selection failed: %s", _phrase_err)
                 return "still on it" if kind in {"heartbeat", "waiting", "long_running", "status"} else "one sec"
-        # Disable tool progress for webhooks - they don't support message editing,
-        # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
-        # Live working-state status for text-rendering typing indicators
-        # (Slack's assistant status line). Independent of tool_progress —
-        # Slack defaults tool_progress off (permanent lines spam channels)
-        # but the status line is ephemeral, so live status stays useful
-        # there. Rendering rides the existing _keep_typing refresh: the
-        # callback only stores a phrase on the adapter, costing zero extra
-        # platform API calls.
-        _live_status_mode = resolve_display_setting(
-            user_config, platform_key, "live_status", "full"
-        )
+        # Locals aliased off the resolved config rather than collapsed at every
+        # read site: ~40 downstream references stay untouched, which keeps this
+        # extraction free of rename risk. Collapse them in a later pass.
+        tool_progress_enabled = _display.tool_progress_enabled
+        _live_status_mode = _display.live_status_mode
         _live_status_adapter = self._adapter_for_source(source)
         if not getattr(_live_status_adapter, "supports_status_text", False):
             _live_status_adapter = None
         if _live_status_mode == "off":
             _live_status_adapter = None
-        # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
-        # instead of the chat (#3459 / #3458). Gateway-only by design.
-        log_mode_enabled = progress_mode == "log" and source.platform != Platform.WEBHOOK
+        log_mode_enabled = _display.log_mode_enabled
         log_queue: "queue.Queue | None" = queue.Queue() if log_mode_enabled else None
-        # Natural assistant status messages are intentionally independent from
-        # tool progress and token streaming. Users can keep tool_progress quiet
-        # in chat platforms while opting into concise mid-turn updates.
-        interim_assistant_messages_mode = _display_surface_mode(
-            "interim_assistant_messages",
-            default=True,
-            require_platform_override_for={Platform.MATTERMOST},
-        )
-        interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
-            and interim_assistant_messages_mode != "off"
-        )
-        # thinking_progress is independent — if enabled, we need the progress
-        # queue even when tool_progress is off (thinking relay uses same infra).
-        # Mattermost requires a per-platform opt-in: global scratch-text display
-        # is too easy to leak into busy public threads.
-        _thinking_mode = _display_surface_mode(
-            "thinking_progress",
-            default=False,
-            require_platform_override_for={Platform.MATTERMOST},
-        )
-        _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        interim_assistant_messages_mode = _display.interim_assistant_messages_mode
+        interim_assistant_messages_enabled = _display.interim_assistant_messages_enabled
+        _thinking_mode = _display.thinking_mode
+        _thinking_enabled = _display.thinking_enabled
+        needs_progress_queue = _display.needs_progress_queue
 
 
         # Queue for progress messages (thread-safe)
@@ -21756,7 +21692,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
-        _long_running_mode = _display_surface_mode(
+        _long_running_mode = resolve_surface_mode(
+            user_config,
+            platform_key,
+            _gateway_platform_value(source.platform),
             "long_running_notifications",
             default=True,
             allow_generic=True,
