@@ -78,3 +78,43 @@ test('matchesAllowedUser rejects everyone when allowlist is empty (#8389)', () =
     rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('expandWhatsAppIdentifiers refuses to read outside sessionDir (SEM-001)', () => {
+  // Regression guard: normalizeWhatsAppIdentifier strips the @-suffix, the
+  // :-prefix and a leading +, but never touched separators or `..`. The value
+  // went straight into path.join, and because the `lid-mapping-` prefix is
+  // itself a path segment, `../../../etc/passwd` resolved to /etc/passwd.json
+  // — outside the session directory entirely. This is the allowlist check, so
+  // it must not be able to read anywhere it likes regardless of input.
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    // A mapping file planted OUTSIDE sessionDir that a traversal would reach.
+    const outside = path.join(sessionDir, '..', 'lid-mapping-escaped.json');
+    writeFileSync(outside, JSON.stringify('19175395595@s.whatsapp.net'));
+
+    try {
+      const traversals = [
+        '../../../etc/passwd',
+        '../lid-mapping-escaped',
+        'foo/../../bar',
+        './relative',
+      ];
+
+      for (const attempt of traversals) {
+        // No alias is ever resolved from a traversal path: the walk returns
+        // only the normalized input itself, never a mapped value read off disk.
+        const aliases = expandWhatsAppIdentifiers(attempt, sessionDir);
+        assert.deepEqual([...aliases], [normalizeWhatsAppIdentifier(attempt)]);
+
+        // And it can never satisfy an allowlist it was not literally listed in.
+        const allowed = parseAllowedUsers('19175395595');
+        assert.equal(matchesAllowedUser(attempt, allowed, sessionDir), false);
+      }
+    } finally {
+      rmSync(outside, { force: true });
+    }
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

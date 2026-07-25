@@ -18,7 +18,21 @@ export function parseAllowedUsers(rawValue) {
   );
 }
 
+// A WhatsApp identifier is a phone number or a LID — always a bare token,
+// never a path. normalizeWhatsAppIdentifier() strips the @-suffix, the
+// :-prefix and a leading +, but it does not touch separators or `..`, so
+// without this guard `../../../etc/passwd` survives normalization and
+// path.join() resolves it to /etc/passwd.json: the `lid-mapping-` prefix is
+// itself consumed as a path segment. Anchored here rather than in the
+// normalizer so the invariant sits next to the filesystem call and a future
+// caller cannot route around it.
+const SAFE_IDENTIFIER = /^[A-Za-z0-9_-]+$/;
+
 function readMappingFile(sessionDir, identifier, suffix = '') {
+  if (!SAFE_IDENTIFIER.test(identifier)) {
+    return null;
+  }
+
   const filePath = path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`);
   if (!existsSync(filePath)) {
     return null;
