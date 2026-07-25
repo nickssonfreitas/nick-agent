@@ -275,6 +275,29 @@ scan_semgrep() {
   # eram ws://localhost em arquivo de teste, mais 20 findings so em
   # ui-tui/src/__tests__. Os globs cobrem as suites JS/TS que nao vivem em um
   # diretorio tests/ (ex.: apps/desktop/src/lib/gateway-ws-url.test.ts).
+  #
+  # Exclusoes por REGRA (nao por caminho). As duas abaixo produziram 180
+  # findings e zero verdadeiros positivos na triagem de 2026-07-24, e sao
+  # estruturalmente incompativeis com este codebase, nao acidentalmente
+  # ruidosas — ver SEMGREP-TRIAGE_2026_07_24.md secoes 4 e 5:
+  #
+  #  - sqlalchemy-execute-raw-query (97): interpolacao de IDENTIFICADOR, onde
+  #    parametro SQL nao existe por definicao. PRAGMA, REINDEX com escape de
+  #    aspas correto, e nomes de tabela vindos da constante _REBUILD_SPECS.
+  #    Os valores sempre passam por binding.
+  #  - dynamic-urllib-use-detected (83): todo cliente de API tem URL nao
+  #    literal. Os caminhos que recebem input nao-confiavel ja sao cobertos
+  #    por tools/url_safety.py (bloqueia faixas privadas e metadata de cloud),
+  #    consumido por 19 modulos incluindo web_tools, browser_tool e os
+  #    adapters de plataforma.
+  #
+  # python-logger-credential-disclosure (146, tambem 100% falso-positivo)
+  # fica ATIVA de proposito: e a unica das tres cujo custo de falhar e alto,
+  # e revisar strings de mensagem de log e barato.
+  local semgrep_excluded_rules=(
+    --exclude-rule python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    --exclude-rule python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  )
   set +e
   (cd "${PROJECT_ROOT}" && semgrep scan \
     --config "${SEMGREP_CONFIG}" \
@@ -301,6 +324,7 @@ scan_semgrep() {
     --exclude '*.test.mjs' \
     --exclude 'test_*.py' \
     --exclude '*_test.py' \
+    "${semgrep_excluded_rules[@]}" \
     .) >"${REPORT_DIR}/semgrep.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
