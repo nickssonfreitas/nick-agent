@@ -269,6 +269,35 @@ scan_gitleaks_worktree() {
 scan_semgrep() {
   section "Semgrep — análise estática"
   local report="${REPORT_DIR}/semgrep.json" stderr="${REPORT_DIR}/semgrep.stderr.log" rc
+  # Mesmo modelo de ameaca do Bandit: codigo de teste nao e distribuido, entao
+  # fica fora do escopo. Sem estas exclusoes o semgrep divergia do bandit e
+  # media coisa diferente no mesmo repo: 38 dos 71 detect-insecure-websocket
+  # eram ws://localhost em arquivo de teste, mais 20 findings so em
+  # ui-tui/src/__tests__. Os globs cobrem as suites JS/TS que nao vivem em um
+  # diretorio tests/ (ex.: apps/desktop/src/lib/gateway-ws-url.test.ts).
+  #
+  # Exclusoes por REGRA (nao por caminho). As duas abaixo produziram 180
+  # findings e zero verdadeiros positivos na triagem de 2026-07-24, e sao
+  # estruturalmente incompativeis com este codebase, nao acidentalmente
+  # ruidosas — ver SEMGREP-TRIAGE_2026_07_24.md secoes 4 e 5:
+  #
+  #  - sqlalchemy-execute-raw-query (97): interpolacao de IDENTIFICADOR, onde
+  #    parametro SQL nao existe por definicao. PRAGMA, REINDEX com escape de
+  #    aspas correto, e nomes de tabela vindos da constante _REBUILD_SPECS.
+  #    Os valores sempre passam por binding.
+  #  - dynamic-urllib-use-detected (83): todo cliente de API tem URL nao
+  #    literal. Os caminhos que recebem input nao-confiavel ja sao cobertos
+  #    por tools/url_safety.py (bloqueia faixas privadas e metadata de cloud),
+  #    consumido por 19 modulos incluindo web_tools, browser_tool e os
+  #    adapters de plataforma.
+  #
+  # python-logger-credential-disclosure (146, tambem 100% falso-positivo)
+  # fica ATIVA de proposito: e a unica das tres cujo custo de falhar e alto,
+  # e revisar strings de mensagem de log e barato.
+  local semgrep_excluded_rules=(
+    --exclude-rule python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+    --exclude-rule python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+  )
   set +e
   (cd "${PROJECT_ROOT}" && semgrep scan \
     --config "${SEMGREP_CONFIG}" \
@@ -286,10 +315,21 @@ scan_semgrep() {
     --exclude venv \
     --exclude dist \
     --exclude build \
+    --exclude tests \
+    --exclude test \
+    --exclude __tests__ \
+    --exclude '*.test.ts' \
+    --exclude '*.test.tsx' \
+    --exclude '*.test.js' \
+    --exclude '*.test.mjs' \
+    --exclude 'test_*.py' \
+    --exclude '*_test.py' \
+    "${semgrep_excluded_rules[@]}" \
     .) >"${REPORT_DIR}/semgrep.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
-  classify_json_report semgrep "${report}" "${rc}" '(.results // []) | length' "Ruleset: ${SEMGREP_CONFIG}."
+  classify_json_report semgrep "${report}" "${rc}" '(.results // []) | length' \
+    "Ruleset: ${SEMGREP_CONFIG}. Código de produção; testes excluídos."
 }
 
 scan_bandit() {
@@ -313,7 +353,27 @@ scan_bandit() {
     -f json -o "${report}" >"${REPORT_DIR}/bandit.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
-  classify_json_report bandit "${report}" "${rc}" '(.results // []) | length' "Código Python."
+
+  # A contagem publicada cobre apenas MEDIUM+HIGH. O JSON continua completo
+  # (LOW incluso) porque a evidencia bruta e o que sustenta a auditoria; o que
+  # muda e o numero de manchete, que antes era dominado por heuristica LOW:
+  # B110 (try/except/pass) sozinho dava 1.613 dos 3.273 findings, e B105
+  # (nome de constante parecendo senha) mais 303. Nenhum dos dois indica
+  # vulnerabilidade sem confirmacao no codigo.
+  local low=0
+  if [[ -s "${report}" ]] && jq -e . "${report}" >/dev/null 2>&1; then
+    low="$(jq -r '[(.results // [])[] | select(.issue_severity == "LOW")] | length' "${report}")"
+  fi
+
+  # Bandit sai 1 quando acha qualquer issue, inclusive LOW. Como a expressao de
+  # contagem agora decide sozinha entre findings e clean, um rc=1 acompanhado de
+  # zero MEDIUM+HIGH seria classificado como 'error' e invalidaria a auditoria.
+  # Normalizamos so esse caso; rc >= 2 e falha real da ferramenta e permanece.
+  (( rc == 1 )) && rc=0
+
+  classify_json_report bandit "${report}" "${rc}" \
+    '[(.results // [])[] | select(.issue_severity != "LOW")] | length' \
+    "Código Python de produção, severidade MEDIUM+. ${low} finding(s) LOW no relatório, fora da contagem."
 }
 
 scan_pip_audit() {
@@ -327,6 +387,26 @@ scan_pip_audit() {
   if [[ -f "${PROJECT_ROOT}/pylock.toml" ]]; then
     args+=(--locked --strict "${PROJECT_ROOT}")
     mode="pylock.toml via --locked"
+  elif [[ -f "${PROJECT_ROOT}/uv.lock" ]] && command_exists uv; then
+    # Auditar `pyproject.toml` direto resolve so as dependencias base e ignora
+    # os extras, que e onde mora quase tudo: o caminho de instalacao que a doc
+    # manda usar e `.[all,dev]`, com 41 extras. Na medicao de 2026-07-25 isso
+    # significava auditar 59 pacotes e reportar 'clean', enquanto o conjunto
+    # travado com todos os extras tem 227 pacotes e 3 vulnerabilidades
+    # (pynacl 1.5.0, setuptools 81.0.0) — que so apareciam porque o
+    # osv-scanner le o uv.lock por conta propria. Um 'clean' cobrindo um
+    # quarto da superficie instalada e pior que nenhum relatorio.
+    local lock_req="${TEMP_ROOT}/uv-lock-requirements.txt"
+    if uv export --directory "${PROJECT_ROOT}" --format requirements-txt \
+         --all-extras --no-emit-project -o "${lock_req}" >/dev/null 2>>"${stderr}"; then
+      args+=(--requirement "${lock_req}")
+      mode="uv.lock via uv export --all-extras"
+    else
+      # Fallback silencioso invalidaria o relatorio: o modo fica registrado na
+      # coluna Observacao para que o recorte reduzido seja visivel.
+      args+=("${PROJECT_ROOT}")
+      mode="pyproject.toml (uv export falhou; extras fora do escopo)"
+    fi
   elif [[ -f "${PROJECT_ROOT}/requirements.txt" ]]; then
     args+=(--requirement "${PROJECT_ROOT}/requirements.txt")
     mode="requirements.txt"
@@ -660,7 +740,7 @@ generate_summary() {
     printf '# Relatório de segurança\n\n'
     printf -- '- Gerado em: `%s`\n' "$(now)"
     printf -- '- Commit: `%s`\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
-    printf -- '- Total bruto de findings: **%s**\n' "${TOTAL_FINDINGS}"
+    printf -- '- Total de findings reportados: **%s**\n' "${TOTAL_FINDINGS}"
     printf -- '- Ferramentas com findings: **%s**\n' "${FINDING_TOOLS}"
     printf -- '- Ferramentas limpas: **%s**\n' "${CLEAN_TOOLS}"
     printf -- '- Ferramentas com erro: **%s**\n' "${ERROR_TOOLS}"
@@ -671,7 +751,10 @@ generate_summary() {
     jq -r '. | "| \(.tool) | \(.status) | \(.count) | `\(.report)` | \(.note | gsub("\\|"; "\\\\|")) |"' \
       "${RESULTS_JSONL}"
     printf '\n## Interpretação\n\n'
-    printf 'As contagens são brutas e podem incluir duplicatas entre scanners. '
+    printf 'As contagens podem incluir duplicatas entre scanners e não são somáveis como risco. '
+    printf 'O escopo é código de produção: Bandit e Semgrep excluem testes, e a contagem do '
+    printf 'Bandit cobre apenas MEDIUM+HIGH (os LOW seguem no JSON, fora do total). '
+    printf 'A coluna Observação registra o recorte aplicado a cada ferramenta. '
     printf 'Todo finding precisa ser confirmado no código antes de uma correção. '
     printf 'Um status `error` invalida a auditoria e deve ser resolvido antes do deploy.\n'
   } > "${SUMMARY_MD}"
@@ -681,7 +764,7 @@ generate_summary() {
   log "Resumo Markdown: ${SUMMARY_MD}"
   log "Resumo JSON: ${SUMMARY_JSON}"
   log "Log completo: ${LOG_FILE}"
-  printf '\nFindings brutos: %s | scanners com erro: %s\n' "${TOTAL_FINDINGS}" "${ERROR_TOOLS}"
+  printf '\nFindings reportados: %s | scanners com erro: %s\n' "${TOTAL_FINDINGS}" "${ERROR_TOOLS}"
 }
 
 main() {
@@ -718,7 +801,7 @@ main() {
     return 2
   fi
   if [[ "${FAIL_ON_FINDINGS}" == "1" ]] && (( TOTAL_FINDINGS > 0 )); then
-    warn "Foram encontrados ${TOTAL_FINDINGS} findings brutos. Revise ${SUMMARY_MD}."
+    warn "Foram encontrados ${TOTAL_FINDINGS} findings em código de produção. Revise ${SUMMARY_MD}."
     return 1
   fi
 

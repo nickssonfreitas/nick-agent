@@ -28,6 +28,19 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    # Wait before proposing a freshly published release. The attack this blocks
+    # is a compromised maintainer account publishing a malicious action tag:
+    # without a cooldown Dependabot would open the bump PR within the hour,
+    # while the compromise is still undetected. A week is long enough for the
+    # ecosystem to notice and yank, and costs nothing here because routine
+    # action bumps are batched weekly anyway.
+    #
+    # Security updates are NOT delayed: they are CVE-driven, arrive through the
+    # separate Dependabot security-updates setting described above, and are
+    # exempt from cooldown by design — when a pin is known-bad we want it moved
+    # immediately.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     labels:
       - "dependencies"

@@ -1,5 +1,11 @@
 name: Deploy Site
 
+# checkov:skip=CKV_GHA_7:Os dois inputs selecionam QUAL artefato de skills-index
+# publicar, nao alteram como o site e construido. Ambos chegam ao job via
+# `env:` (SKILLS_INDEX_RUN_ID, REBUILD_SKILLS_INDEX), nunca interpolados em
+# bloco run:, e o run_id so e aceito se o artefato correspondente existir.
+# Sem eles nao ha como republicar um indice fora da janela de release.
+
 on:
   release:
     types: [published]
