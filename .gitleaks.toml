@@ -1,0 +1,28 @@
+# Configuracao do Gitleaks para o Nick Agent.
+#
+# Usada por `.security/scan.sh` (modos `git` e `dir`). Estende o ruleset padrao
+# do Gitleaks e adiciona apenas allowlists de caminho — nenhuma regra e
+# afrouxada ou removida.
+#
+# Motivacao: no scan de 2026-07-24, 621 dos 817 findings do worktree (76%)
+# vinham de dois arquivos de documentacao vendorada do Unsloth, que embutem
+# chaves de exemplo no corpo do texto. Isso afogava os poucos achados reais.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentacao de terceiros vendorada no repositorio"
+# Docs upstream do Unsloth (llms-full.md ~1MB, llms-txt.md ~813KB) copiados sem
+# alteracao. Contem chaves de exemplo/placeholder em snippets. Nao sao segredos
+# do projeto e nao ha o que rotacionar.
+#
+# O padrao e ancorado em `unsloth/references/` em vez do caminho completo de
+# proposito: o diretorio ja migrou de `skills/mlops/unsloth/` para
+# `optional-skills/mlops/training/unsloth/`, e o modo `gitleaks git` varre o
+# historico, onde o caminho antigo ainda existe. Um padrao preso ao caminho
+# atual limparia o worktree e deixaria os mesmos 621 findings no historico.
+paths = [
+  '''unsloth/references/llms-full\.md$''',
+  '''unsloth/references/llms-txt\.md$''',
+]

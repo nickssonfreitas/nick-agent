@@ -228,6 +228,17 @@ RUN mkdir -p /opt/hermes/bin && \
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
+#
+# Scanners flag the trailing `USER root` (Checkov CKV_DOCKER_8, Semgrep
+# `last-user-is-root`) as "container runs as root". That reading is wrong for
+# an s6-supervised image: PID 1 must keep CAP_CHOWN/CAP_SETUID to remap the
+# hermes UID/GID to HERMES_UID/HERMES_GID and chown the bind-mounted /opt/data
+# volume at boot (docker/stage2-hook.sh). Pinning `USER hermes` here would
+# break that remap and leave the volume unwritable. No long-running process
+# stays as root: every entrypoint drops privileges — docker/main-wrapper.sh,
+# docker/hermes-exec-shim.sh, docker/s6-rc.d/*/run and docker/cont-init.d/*.
+#checkov:skip=CKV_DOCKER_8:PID 1 precisa de root para o remap de UID/GID e chown do volume; os serviços caem para hermes via s6-setuidgid.
+# nosemgrep: last-user-is-root
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the

@@ -54,7 +54,19 @@ readonly ZAP_IMAGE="${ZAP_IMAGE:-ghcr.io/zaproxy/zaproxy:stable}"
 readonly CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 readonly ZAP_TARGET_URL="${ZAP_TARGET_URL:-}"
 
-mkdir -p -- "${LOG_DIR}" "${REPORT_DIR}" "${SOURCE_SNAPSHOT}"
+# Cache local ao projeto. O default do Trivy (~/.cache/trivy) e compartilhado
+# com qualquer outra invocacao da maquina: um unico `sudo trivy` deixa
+# db/trivy.db como root:root e todo scan seguinte morre com
+# "permission denied", marcando a auditoria inteira como invalida. Manter o
+# cache sob .security/ (ja coberto por .gitignore) torna o scan hermetico.
+readonly CACHE_DIR="${SCRIPT_DIR}/cache"
+export TRIVY_CACHE_DIR="${TRIVY_CACHE_DIR:-${CACHE_DIR}/trivy}"
+
+# Estende o ruleset padrao do Gitleaks com allowlists de caminho (docs de
+# terceiros vendorados). Nenhuma regra e afrouxada — ver o proprio arquivo.
+readonly GITLEAKS_CONFIG="${GITLEAKS_CONFIG:-${PROJECT_ROOT}/.gitleaks.toml}"
+
+mkdir -p -- "${LOG_DIR}" "${REPORT_DIR}" "${SOURCE_SNAPSHOT}" "${TRIVY_CACHE_DIR}"
 touch -- "${LOG_FILE}" "${RESULTS_JSONL}"
 chmod 600 -- "${LOG_FILE}" "${RESULTS_JSONL}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
@@ -234,7 +246,8 @@ scan_gitleaks_git() {
   section "Gitleaks — histórico Git"
   local report="${REPORT_DIR}/gitleaks-git.json" stderr="${REPORT_DIR}/gitleaks-git.stderr.log" rc
   set +e
-  (cd "${PROJECT_ROOT}" && gitleaks git --redact=100 --report-format json --report-path "${report}" .) \
+  (cd "${PROJECT_ROOT}" && gitleaks git --redact=100 --config "${GITLEAKS_CONFIG}" \
+    --report-format json --report-path "${report}" .) \
     >"${REPORT_DIR}/gitleaks-git.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
@@ -245,7 +258,8 @@ scan_gitleaks_worktree() {
   section "Gitleaks — arquivos atuais"
   local report="${REPORT_DIR}/gitleaks-worktree.json" stderr="${REPORT_DIR}/gitleaks-worktree.stderr.log" rc
   set +e
-  gitleaks dir --redact=100 --report-format json --report-path "${report}" "${SOURCE_SNAPSHOT}" \
+  gitleaks dir --redact=100 --config "${GITLEAKS_CONFIG}" \
+    --report-format json --report-path "${report}" "${SOURCE_SNAPSHOT}" \
     >"${REPORT_DIR}/gitleaks-worktree.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
@@ -286,6 +300,14 @@ scan_bandit() {
   # .security/ (venvs dos proprios scanners) e node_modules/ serem varridos.
   local skip="${PROJECT_ROOT}/.git,${PROJECT_ROOT}/.security,${PROJECT_ROOT}/node_modules"
   skip+=",${PROJECT_ROOT}/.venv,${PROJECT_ROOT}/venv,${PROJECT_ROOT}/dist,${PROJECT_ROOT}/build"
+  # tests/ fica fora: o modelo de ameaca do Bandit e codigo que roda em
+  # producao, e codigo de teste nao e distribuido. Sem esta exclusao, B101
+  # (assert_used) sozinho gerava 85.442 dos 93.396 findings — 91% do relatorio
+  # era `assert` em teste, que e exatamente o uso esperado. Achados em tests/
+  # eram 90.126 no total, contra 3.270 em codigo de producao.
+  # Os globs cobrem suites aninhadas (ex.: skills/creative/comfyui/**/tests/),
+  # que o caminho absoluto de tests/ na raiz nao alcanca.
+  skip+=",${PROJECT_ROOT}/tests,*/tests/*,*/test/*"
   set +e
   bandit -r "${PROJECT_ROOT}" -x "${skip}" \
     -f json -o "${report}" >"${REPORT_DIR}/bandit.stdout.log" 2>"${stderr}"
@@ -329,19 +351,60 @@ scan_pip_audit() {
 scan_npm_audit() {
   section "npm audit — dependências JavaScript"
   local report="${REPORT_DIR}/npm-audit.json" stderr="${REPORT_DIR}/npm-audit.stderr.log" rc
-  if [[ ! -f "${PROJECT_ROOT}/package-lock.json" ]]; then
-    record_result npm-audit skipped 0 0 "" "package-lock.json não encontrado."
+  local locks=() lock dir part parts_dir sources worst_rc=0 idx=0
+
+  # Audita TODO package-lock.json rastreado, nao so o da raiz. O repo tem 4
+  # (raiz, website/, plugins/platforms/photon/sidecar/, scripts/whatsapp-bridge/)
+  # e o OSV encontrou vulnerabilidade em todos. Auditar apenas a raiz deixava o
+  # website/ — que e publicado — sem cobertura de npm audit: as 16
+  # vulnerabilidades dele, incluindo uma critica (websocket-driver), so
+  # apareciam via OSV.
+  while IFS= read -r -d '' lock; do
+    [[ "${lock}" == *node_modules/* ]] && continue
+    locks+=("${lock}")
+  done < <(git -C "${PROJECT_ROOT}" ls-files -z '*package-lock.json')
+
+  if ((${#locks[@]} == 0)); then
+    record_result npm-audit skipped 0 0 "" "Nenhum package-lock.json rastreado."
     return
   fi
 
-  set +e
-  (cd "${PROJECT_ROOT}" && npm audit --json --package-lock-only --audit-level=low) \
-    >"${report}" 2>"${stderr}"
-  rc=$?
-  set -e
-  classify_json_report npm-audit "${report}" "${rc}" \
-    '(.metadata.vulnerabilities.total // ((.metadata.vulnerabilities // {}) | to_entries | map(.value) | add) // 0)' \
-    "Nenhuma correção automática foi aplicada."
+  parts_dir="${TEMP_ROOT}/npm-audit"
+  sources="${parts_dir}/sources.jsonl"
+  mkdir -p -- "${parts_dir}"
+  : >"${sources}"
+  : >"${stderr}"
+
+  for lock in "${locks[@]}"; do
+    dir="$(dirname -- "${PROJECT_ROOT}/${lock}")"
+    part="${parts_dir}/part-${idx}.json"
+    idx=$((idx + 1))
+    printf '=== %s ===\n' "${lock}" >>"${stderr}"
+    set +e
+    (cd "${dir}" && npm audit --json --package-lock-only --audit-level=low) \
+      >"${part}" 2>>"${stderr}"
+    rc=$?
+    set -e
+    if (( rc > worst_rc )); then worst_rc="${rc}"; fi
+    # Um lockfile ilegivel nao pode virar "0 findings": entra como report null
+    # e forca rc!=0, para classify_json_report marcar erro em vez de clean.
+    if jq -e . "${part}" >/dev/null 2>&1; then
+      jq -c --arg path "${lock}" --argjson exit_code "${rc}" \
+        '{path:$path, exit_code:$exit_code, report:.}' "${part}" >>"${sources}"
+    else
+      jq -nc --arg path "${lock}" --argjson exit_code "${rc}" \
+        '{path:$path, exit_code:$exit_code, report:null}' >>"${sources}"
+      worst_rc=1
+    fi
+  done
+
+  jq -s '{sources: ., metadata: {vulnerabilities: {total:
+      (map(.report.metadata.vulnerabilities.total // 0) | add // 0)}}}' \
+    "${sources}" >"${report}"
+
+  classify_json_report npm-audit "${report}" "${worst_rc}" \
+    '.metadata.vulnerabilities.total' \
+    "${#locks[@]} lockfile(s) auditado(s). Nenhuma correção automática foi aplicada."
 }
 
 scan_osv() {
@@ -391,6 +454,9 @@ scan_trivy_fs() {
     --skip-dirs "${PROJECT_ROOT}/node_modules" \
     --skip-dirs "${PROJECT_ROOT}/.venv" \
     --skip-dirs "${PROJECT_ROOT}/venv" \
+    --skip-dirs '**/node_modules' \
+    --skip-dirs '**/.venv' \
+    --skip-dirs '**/venv' \
     "${PROJECT_ROOT}" >"${REPORT_DIR}/trivy-filesystem.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
