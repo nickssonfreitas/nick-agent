@@ -22,9 +22,29 @@
 #     (chown, profile reconcile, dashboard toggle) and sets up the
 #     supervision tree before any service starts. Bypassing it skips
 #     all of that setup and the gateway will not work correctly.
-#   - The gateway's API server is off unless you uncomment API_SERVER_KEY
-#     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
-#     this on an internet-facing host.
+#   - network_mode: host is intentional, not a default we forgot to
+#     harden: the dashboard's gateway-liveness detection needs a shared
+#     PID/network namespace with the gateway process, and the dashboard
+#     reaches the gateway's loopback-bound API/health port directly this
+#     way, with no published bridge ports. See
+#     website/docs/user-guide/docker.md ("Running the dashboard") before
+#     switching either service to bridge networking.
+#   - The gateway's API server is off unless API_SERVER_ENABLED=true is
+#     set in the mounted ~/.hermes/.env (the app itself then refuses to
+#     start the API server without a strong API_SERVER_KEY — see
+#     gateway/platforms/api_server.py's startup guard). The
+#     API_SERVER_HOST / API_SERVER_KEY lines below are commented out by
+#     default so a bare `docker compose up` never touches the API
+#     surface; uncomment them only to source the key from this shell's
+#     environment instead of writing it into ~/.hermes/.env, or to widen
+#     the bind beyond the default loopback-only host. Because
+#     network_mode: host removes the usual bridge-network NAT boundary,
+#     API_SERVER_HOST=0.0.0.0 here really does reach every interface on
+#     the host, not just the container — see
+#     docs/user-guide/features/api-server.md before doing this on an
+#     internet-facing host. When you do uncomment, API_SERVER_KEY uses
+#     the `${VAR:?message}` form so compose refuses to start rather than
+#     silently launching with an empty key.
 #
 services:
   gateway:
@@ -38,10 +58,17 @@ services:
     environment:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
+      # API server: opt in via API_SERVER_ENABLED=true in ~/.hermes/.env.
+      # These two lines are only needed if you ALSO want to widen the bind
+      # or source the key from this shell instead of ~/.hermes/.env; leave
+      # them commented for the default loopback-only, messaging-only setup.
+      # ⚠️ SECURITY: with network_mode: host, API_SERVER_HOST=0.0.0.0 below
+      # exposes the API server (full terminal-capable agent access) on
+      # every interface of the host, not just the container. Uncomment
+      # only on a trusted network, behind a firewall/reverse-proxy auth
+      # layer, or after reading docs/user-guide/features/api-server.md.
       # - API_SERVER_HOST=0.0.0.0
-      # - API_SERVER_KEY=${API_SERVER_KEY}
+      # - API_SERVER_KEY=${API_SERVER_KEY:?set API_SERVER_KEY in your shell or .env before enabling the API server}
       # Microsoft Teams — uncomment and fill in to enable Teams gateway.
       # Register your bot at https://dev.botframework.com/ to get these values.
       # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
