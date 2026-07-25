@@ -19,6 +19,12 @@ name: Publish Image (GHCR)
 # of upstream's matrix would double the build time to produce an image nothing
 # here runs. If you ever deploy to arm, add a second matrix leg and restore
 # upstream's push-by-digest + manifest-merge shape from docker.yml.
+#
+# checkov:skip=CKV_GHA_7:`extra_tag` so acrescenta um rotulo a mais na imagem;
+# `sha-<short>` e publicado sempre e nao depende de input, entao a procedencia
+# do artefato nao vem do parametro. O valor chega via `env: EXTRA_TAG`, nunca
+# interpolado em bloco run:, e o disparo exige write no repo. Mesma decisao
+# aplicada em deploy-vps.yml, deploy-site.yml e upload_to_pypi.yml.
 
 on:
   workflow_dispatch:
