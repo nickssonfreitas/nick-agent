@@ -269,6 +269,12 @@ scan_gitleaks_worktree() {
 scan_semgrep() {
   section "Semgrep — análise estática"
   local report="${REPORT_DIR}/semgrep.json" stderr="${REPORT_DIR}/semgrep.stderr.log" rc
+  # Mesmo modelo de ameaca do Bandit: codigo de teste nao e distribuido, entao
+  # fica fora do escopo. Sem estas exclusoes o semgrep divergia do bandit e
+  # media coisa diferente no mesmo repo: 38 dos 71 detect-insecure-websocket
+  # eram ws://localhost em arquivo de teste, mais 20 findings so em
+  # ui-tui/src/__tests__. Os globs cobrem as suites JS/TS que nao vivem em um
+  # diretorio tests/ (ex.: apps/desktop/src/lib/gateway-ws-url.test.ts).
   set +e
   (cd "${PROJECT_ROOT}" && semgrep scan \
     --config "${SEMGREP_CONFIG}" \
@@ -286,10 +292,20 @@ scan_semgrep() {
     --exclude venv \
     --exclude dist \
     --exclude build \
+    --exclude tests \
+    --exclude test \
+    --exclude __tests__ \
+    --exclude '*.test.ts' \
+    --exclude '*.test.tsx' \
+    --exclude '*.test.js' \
+    --exclude '*.test.mjs' \
+    --exclude 'test_*.py' \
+    --exclude '*_test.py' \
     .) >"${REPORT_DIR}/semgrep.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
-  classify_json_report semgrep "${report}" "${rc}" '(.results // []) | length' "Ruleset: ${SEMGREP_CONFIG}."
+  classify_json_report semgrep "${report}" "${rc}" '(.results // []) | length' \
+    "Ruleset: ${SEMGREP_CONFIG}. Código de produção; testes excluídos."
 }
 
 scan_bandit() {
@@ -313,7 +329,27 @@ scan_bandit() {
     -f json -o "${report}" >"${REPORT_DIR}/bandit.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
-  classify_json_report bandit "${report}" "${rc}" '(.results // []) | length' "Código Python."
+
+  # A contagem publicada cobre apenas MEDIUM+HIGH. O JSON continua completo
+  # (LOW incluso) porque a evidencia bruta e o que sustenta a auditoria; o que
+  # muda e o numero de manchete, que antes era dominado por heuristica LOW:
+  # B110 (try/except/pass) sozinho dava 1.613 dos 3.273 findings, e B105
+  # (nome de constante parecendo senha) mais 303. Nenhum dos dois indica
+  # vulnerabilidade sem confirmacao no codigo.
+  local low=0
+  if [[ -s "${report}" ]] && jq -e . "${report}" >/dev/null 2>&1; then
+    low="$(jq -r '[(.results // [])[] | select(.issue_severity == "LOW")] | length' "${report}")"
+  fi
+
+  # Bandit sai 1 quando acha qualquer issue, inclusive LOW. Como a expressao de
+  # contagem agora decide sozinha entre findings e clean, um rc=1 acompanhado de
+  # zero MEDIUM+HIGH seria classificado como 'error' e invalidaria a auditoria.
+  # Normalizamos so esse caso; rc >= 2 e falha real da ferramenta e permanece.
+  (( rc == 1 )) && rc=0
+
+  classify_json_report bandit "${report}" "${rc}" \
+    '[(.results // [])[] | select(.issue_severity != "LOW")] | length' \
+    "Código Python de produção, severidade MEDIUM+. ${low} finding(s) LOW no relatório, fora da contagem."
 }
 
 scan_pip_audit() {
@@ -660,7 +696,7 @@ generate_summary() {
     printf '# Relatório de segurança\n\n'
     printf -- '- Gerado em: `%s`\n' "$(now)"
     printf -- '- Commit: `%s`\n' "$(git -C "${PROJECT_ROOT}" rev-parse HEAD)"
-    printf -- '- Total bruto de findings: **%s**\n' "${TOTAL_FINDINGS}"
+    printf -- '- Total de findings reportados: **%s**\n' "${TOTAL_FINDINGS}"
     printf -- '- Ferramentas com findings: **%s**\n' "${FINDING_TOOLS}"
     printf -- '- Ferramentas limpas: **%s**\n' "${CLEAN_TOOLS}"
     printf -- '- Ferramentas com erro: **%s**\n' "${ERROR_TOOLS}"
@@ -671,7 +707,10 @@ generate_summary() {
     jq -r '. | "| \(.tool) | \(.status) | \(.count) | `\(.report)` | \(.note | gsub("\\|"; "\\\\|")) |"' \
       "${RESULTS_JSONL}"
     printf '\n## Interpretação\n\n'
-    printf 'As contagens são brutas e podem incluir duplicatas entre scanners. '
+    printf 'As contagens podem incluir duplicatas entre scanners e não são somáveis como risco. '
+    printf 'O escopo é código de produção: Bandit e Semgrep excluem testes, e a contagem do '
+    printf 'Bandit cobre apenas MEDIUM+HIGH (os LOW seguem no JSON, fora do total). '
+    printf 'A coluna Observação registra o recorte aplicado a cada ferramenta. '
     printf 'Todo finding precisa ser confirmado no código antes de uma correção. '
     printf 'Um status `error` invalida a auditoria e deve ser resolvido antes do deploy.\n'
   } > "${SUMMARY_MD}"
@@ -681,7 +720,7 @@ generate_summary() {
   log "Resumo Markdown: ${SUMMARY_MD}"
   log "Resumo JSON: ${SUMMARY_JSON}"
   log "Log completo: ${LOG_FILE}"
-  printf '\nFindings brutos: %s | scanners com erro: %s\n' "${TOTAL_FINDINGS}" "${ERROR_TOOLS}"
+  printf '\nFindings reportados: %s | scanners com erro: %s\n' "${TOTAL_FINDINGS}" "${ERROR_TOOLS}"
 }
 
 main() {
@@ -718,7 +757,7 @@ main() {
     return 2
   fi
   if [[ "${FAIL_ON_FINDINGS}" == "1" ]] && (( TOTAL_FINDINGS > 0 )); then
-    warn "Foram encontrados ${TOTAL_FINDINGS} findings brutos. Revise ${SUMMARY_MD}."
+    warn "Foram encontrados ${TOTAL_FINDINGS} findings em código de produção. Revise ${SUMMARY_MD}."
     return 1
   fi
 

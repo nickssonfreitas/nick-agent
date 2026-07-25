@@ -1,18 +1,28 @@
 # Configuracao do Gitleaks para o Nick Agent.
 #
 # Usada por `.security/scan.sh` (modos `git` e `dir`). Estende o ruleset padrao
-# do Gitleaks e adiciona apenas allowlists de caminho — nenhuma regra e
-# afrouxada ou removida.
+# do Gitleaks e adiciona apenas allowlists — nenhuma regra e afrouxada ou
+# removida.
 #
-# Motivacao: no scan de 2026-07-24, 621 dos 817 findings do worktree (76%)
-# vinham de dois arquivos de documentacao vendorada do Unsloth, que embutem
-# chaves de exemplo no corpo do texto. Isso afogava os poucos achados reais.
+# Principio de escopo: as allowlists abaixo sao presas a `targetRules` sempre
+# que possivel, restritas as regras heuristicas de baixa precisao
+# (`generic-api-key`, `curl-auth-header`, `discord-client-id`, etc.). As regras
+# de alta confianca — `aws-access-token`, `github-pat`, `stripe-access-token`,
+# `slack-*`, `openai-api-key` e afins — seguem ativas em TODO o repositorio,
+# inclusive em `tests/`. Um segredo de provedor real commitado num fixture de
+# teste continua sendo um vazamento real, e continua sendo reportado.
+
+# Ancoragem: nenhum padrao de `paths` usa `^`. O `scan.sh` roda o modo `dir`
+# sobre uma copia da fonte em `/tmp/<run>/source/`, onde o Gitleaks reporta
+# caminho absoluto, enquanto o modo `git` reporta caminho relativo a raiz. Um
+# padrao ancorado em `^` casaria so no historico e deixaria o worktree sujo.
 
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Documentacao de terceiros vendorada no repositorio"
+# ---------------------------------------------------------------------------
+# 1. Documentacao de terceiros vendorada
+# ---------------------------------------------------------------------------
 # Docs upstream do Unsloth (llms-full.md ~1MB, llms-txt.md ~813KB) copiados sem
 # alteracao. Contem chaves de exemplo/placeholder em snippets. Nao sao segredos
 # do projeto e nao ha o que rotacionar.
@@ -22,7 +32,116 @@ description = "Documentacao de terceiros vendorada no repositorio"
 # `optional-skills/mlops/training/unsloth/`, e o modo `gitleaks git` varre o
 # historico, onde o caminho antigo ainda existe. Um padrao preso ao caminho
 # atual limparia o worktree e deixaria os mesmos 621 findings no historico.
+[[allowlists]]
+description = "Documentacao de terceiros vendorada no repositorio"
 paths = [
   '''unsloth/references/llms-full\.md$''',
   '''unsloth/references/llms-txt\.md$''',
+]
+
+# ---------------------------------------------------------------------------
+# 2. Fixtures de teste
+# ---------------------------------------------------------------------------
+# Chaves sinteticas em suites de teste. No scan de 2026-07-25, 174 dos 259
+# findings do historico (67%) vinham de `tests/`, concentrados em
+# test_redact.py, test_run_agent.py e testes de provider — todos com valores
+# inventados para exercitar parsing e redacao.
+#
+# Escopado por `targetRules`: so as regras heuristicas sao silenciadas aqui.
+# `private-key` NAO esta na lista de proposito (ver bloco 5).
+[[allowlists]]
+description = "Fixtures sinteticos em suites de teste"
+targetRules = [
+  "generic-api-key",
+  "curl-auth-header",
+  "jwt",
+  "discord-client-id",
+  "mattermost-access-token",
+  "telegram-bot-api-token",
+  "gcp-api-key",
+]
+paths = [
+  '''(^|/)tests?/''',
+  '''(^|/)__tests__/''',
+  '''(^|/)test_[^/]+\.py$''',
+  '''[^/]+_test\.py$''',
+  '''[^/]+\.test\.(ts|tsx|js|mjs)$''',
+]
+
+# ---------------------------------------------------------------------------
+# 3. Documentacao do projeto
+# ---------------------------------------------------------------------------
+# Placeholders em docs de usuario. Exemplos verificados: em
+# `website/docs/user-guide/messaging/mattermost.md` o match e
+# `MATTERMOST_ALLOWED_USERS=<id>`, que e ID de usuario e nao token; em
+# `skills/gifs/gif-search/SKILL.md` sao chaves de exemplo do Google.
+[[allowlists]]
+description = "Placeholders em documentacao de usuario"
+targetRules = [
+  "generic-api-key",
+  "curl-auth-header",
+  "discord-client-id",
+  "mattermost-access-token",
+  "telegram-bot-api-token",
+  "gcp-api-key",
+]
+paths = [
+  '''(^|/)website/''',
+  '''(^|/)docs/''',
+  '''(^|/)SKILL\.md$''',
+  '''(^|/)README\.md$''',
+]
+
+# ---------------------------------------------------------------------------
+# 4. Codigo vendorado, artefatos gerados e residuo de historico
+# ---------------------------------------------------------------------------
+# - `native/**/vendor/`: headers C de terceiros. `sqlite3ext.h` casa
+#   `generic-api-key` por causa de linhas como `sqlite3_api->column_bytes16`.
+# - `.devmind/product/quality/security/`: relatorios do proprio tooling de
+#   qualidade, que citam trechos de segredo como evidencia.
+# - `exprted.jsonl`: removido do HEAD em 9a19fe1f5. Os 17 matches sao todos
+#   `discord-client-id`, que e identificador publico de OAuth. Sobra apenas no
+#   modo `gitleaks git`, e nao justifica reescrita de historico.
+[[allowlists]]
+description = "Vendorado, gerado e residuo de historico"
+paths = [
+  '''(^|/)vendor/''',
+  '''(^|/)\.devmind/product/quality/''',
+  '''(^|/)exprted\.jsonl$''',
+]
+
+# ---------------------------------------------------------------------------
+# 5. Blocos de chave privada sem material de chave
+# ---------------------------------------------------------------------------
+# Deliberadamente estreito: dois sites verificados, por caminho, em vez de
+# liberar `private-key` para `tests/` inteiro. Uma chave privada real colada em
+# qualquer outro teste continua sendo reportada.
+#
+# - `agent/redact.py`: comentario descrevendo o padrao que o modulo redige.
+# - `tests/gateway/test_platform_base.py`: escreve o header literal
+#   `-----BEGIN OPENSSH PRIVATE KEY-----` (sem corpo) num `id_rsa` falso, para
+#   verificar que o media delivery bloqueia `~/.ssh`.
+[[allowlists]]
+description = "Header de chave privada sem corpo, em comentario e fixture"
+targetRules = ["private-key"]
+paths = [
+  '''(^|/)agent/redact\.py$''',
+  '''(^|/)tests/gateway/test_platform_base\.py$''',
+]
+
+# ---------------------------------------------------------------------------
+# 6. Identificadores publicos de cliente OAuth
+# ---------------------------------------------------------------------------
+# Client ID de OAuth public client nao e segredo: por desenho ele viaja na URL
+# de autorizacao e fica embutido no binario distribuido. Nao ha o que rotacionar.
+# Casado por linha (nao por valor) para sobreviver a troca de provedor.
+# Cobre `_OAUTH_CLIENT_ID` em agent/anthropic_adapter.py, hermes_cli/auth.py e
+# hermes_cli/copilot_auth.py, mais o VOICE_ID do ElevenLabs (ID de catalogo).
+[[allowlists]]
+description = "Client ID de OAuth publico e IDs de catalogo"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''(?i)^\s*[A-Z0-9_]*CLIENT_ID\s*[:=]''',
+  '''(?i)^\s*[A-Z0-9_]*VOICE_ID\s*[:=]''',
 ]
