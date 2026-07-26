@@ -141,16 +141,30 @@ should not be mixed into a security backlog.
 
 ## 5. Open items
 
-- **Promote `defusedxml` from the `wecom` extra to a core dependency**, so the
-  hardening in `read_extract.py` applies to every install instead of only those
-  with the extra. Small pure-Python package; the call belongs to whoever owns
-  the dependency surface.
-- **Apply the same swap to `watch_rss.py` and `search_arxiv.py`**, which parse
-  remote feeds under the same rule.
-- **Pin model revisions** on the `from_pretrained` calls (`B615`), and keep
-  `trust_remote_code=True` confined to operator-run scripts — it must never
-  reach an agent-invoked path.
+All three were closed on 2026-07-26.
 
-None of these change the current risk posture materially; they close the gap
-between what the code does and what `plugins/security-guidance` already tells
-contributors to do.
+- **`defusedxml` promoted to a core dependency.** It was scoped to the `wecom`
+  extra, which left the guard in `read_extract.py` — a *core* tool — hardened
+  only by the accident of an unrelated messaging extra being installed. The
+  `pyproject.toml` scope rule says core is for packages every session uses, and
+  that rule exists to bound supply-chain blast radius; `defusedxml` has zero
+  transitive dependencies and is 71 KB, so it does not move that needle. The
+  reasoning is recorded inline next to the pin rather than left implicit.
+- **`watch_rss.py` and `search_arxiv.py` swapped** to the same guarded parser.
+  Verified live: arXiv still parses a real API response, and `watch_rss` still
+  reads a normal feed while rejecting an entity payload through its existing
+  invalid-feed path.
+- **`B615` did not resolve the way the item was written.** "Pin model
+  revisions" turned out not to apply: `trajectory_compressor.py` takes
+  `tokenizer_name` from config, so there is no fixed SHA to pin, and the
+  training templates exist to be adapted with the user's own model.
+
+  The useful finding underneath was `trust_remote_code: bool = True` as a
+  dataclass default — loading a tokenizer executes repo-supplied code, and
+  HuggingFace defaults it to False for that reason. Checked before touching it:
+  the default tokenizer (`moonshotai/Kimi-K2-Thinking`) ships
+  `tokenization_kimi.py` and genuinely cannot load without it, and the class is
+  not in `toolsets.py` nor imported by `run_agent`/`agent`/`tools` — the one
+  mention in `mini_swe_runner.py` is a docstring. Flipping the default would
+  break the out-of-box path for no security gain, so it was documented instead,
+  with the two conditions that should force a revisit written next to it.

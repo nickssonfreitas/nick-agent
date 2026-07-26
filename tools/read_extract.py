@@ -25,10 +25,12 @@ from xml.etree import ElementTree as ET
 # swap is defense in depth rather than a fix for an open hole: defusedxml
 # refuses entity declarations outright instead of relying on a threshold.
 #
-# It ships in the [wecom] extra rather than core, so this is a preference and
-# not a hard requirement: with it we are hardened, without it we behave exactly
-# as before. Promoting defusedxml to a core dependency would make the guard
-# unconditional — see BANDIT-TRIAGE_2026_07_25.md (BND-001).
+# defusedxml is a core dependency (moved out of the [wecom] extra on
+# 2026-07-26, precisely so this guard is not conditional on an unrelated
+# messaging extra). The try/except stays anyway: this module advertises
+# "without adding hard dependencies" and is imported on paths that must not
+# hard-fail, so a stripped or partial install degrades to the stdlib parser
+# instead of breaking read_file outright.
 #
 # ET stays imported for Element/ParseError; only the parse entry point swaps.
 # defusedxml rejects with DefusedXmlException, which is NOT a ParseError

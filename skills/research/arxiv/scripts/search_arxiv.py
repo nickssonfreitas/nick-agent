@@ -15,6 +15,15 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 
+# The arXiv API response is remote input, so parse it with defusedxml, which
+# refuses entity declarations instead of relying on expat's amplification
+# limit. try/except because this script also runs standalone, outside an
+# install that carries the project's dependencies.
+try:
+    from defusedxml.ElementTree import fromstring as _xml_fromstring
+except ImportError:  # pragma: no cover - standalone execution
+    _xml_fromstring = ET.fromstring
+
 NS = {'a': 'http://www.w3.org/2005/Atom'}
 
 def search(query=None, author=None, category=None, ids=None, max_results=5, sort="relevance"):
@@ -47,7 +56,7 @@ def search(query=None, author=None, category=None, ids=None, max_results=5, sort
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = resp.read()
     
-    root = ET.fromstring(data)
+    root = _xml_fromstring(data)
     entries = root.findall('a:entry', NS)
     
     if not entries:

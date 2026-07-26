@@ -191,10 +191,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
-    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
-    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
-    # adapter and ship via `platform.discord` / `platform.slack` / etc.
-    "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Nothing
+    # left to lazy-install: defusedxml became a core dependency on 2026-07-26
+    # (tools/read_extract.py needs the same guard for user-supplied .docx/.xlsx),
+    # and aiohttp/httpx ship via `platform.discord` / `platform.slack` / etc.
+    # Entry kept so the feature key stays resolvable for callers that probe it.
+    "platform.wecom_callback": (),
     # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed

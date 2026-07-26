@@ -51,6 +51,16 @@ dependencies = [
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
+  # Hardened XML parsing for untrusted input. Sits in core, not an extra, on
+  # purpose — worth saying why, since the scope rule above says "only packages
+  # used by EVERY session". That rule exists to bound supply-chain blast
+  # radius, and defusedxml does not move that needle: zero transitive
+  # dependencies, 71 KB, a pure-stdlib wrapper. Keeping it in [wecom] made the
+  # guard in tools/read_extract.py (a CORE tool — it backs read_file for
+  # .docx/.xlsx) conditional on an unrelated messaging extra being installed,
+  # which is the wrong shape for a security default. See
+  # BANDIT-TRIAGE_2026_07_25.md (BND-001).
+  "defusedxml==0.7.1",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
@@ -167,11 +177,12 @@ cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
-# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
-# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
-# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
-# here to keep the dependency local to wecom_callback's threat model.
-wecom = ["defusedxml==0.7.1"]
+# WeCom-controlled callback endpoints with defusedxml (drop-in replacement for
+# stdlib xml.etree.ElementTree) to block billion-laughs and XXE. defusedxml
+# moved to core on 2026-07-26: the same guard is needed by tools/read_extract.py
+# for user-supplied .docx/.xlsx, and scoping it to a messaging extra left a core
+# tool hardened only by accident of install. Extra kept for back-compat.
+wecom = []
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
