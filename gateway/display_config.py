@@ -21,7 +21,9 @@ config migration (version bump) automatically moves the old format into the new
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 # ---------------------------------------------------------------------------
 # Overrideable display settings and their global defaults
@@ -297,3 +299,188 @@ def _normalise(setting: str, value: Any) -> Any:
         except (TypeError, ValueError):
             return 0
     return value
+
+
+# ---------------------------------------------------------------------------
+# Per-turn display configuration
+# ---------------------------------------------------------------------------
+# Extracted from GatewayRunner._run_agent_inner, which resolved these settings
+# inline as ~15 loose locals. They are a pure function of (user config,
+# platform), so they resolve once per turn into a frozen value object.
+#
+# Platforms are compared by normalised string value rather than by importing
+# gateway.config.Platform, so this module stays a leaf with no gateway imports.
+
+_UNSET = object()
+
+# Platforms that never get chat-visible progress: a webhook has no message to
+# edit, so every progress line would arrive as a separate delivery.
+_NO_CHAT_PROGRESS = {"webhook"}
+# Platforms where a global "show scratch text" setting is too easy to leak into
+# a busy public thread, so the surface requires an explicit per-platform opt-in.
+_REQUIRE_PLATFORM_OPT_IN = {"mattermost"}
+
+
+def gateway_platform_value(platform: Any) -> str:
+    """Return a normalized gateway platform value for enums or raw strings."""
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def has_platform_display_override(
+    user_config: dict, platform_key: str, setting: str
+) -> bool:
+    """Return True when display.platforms.<platform> explicitly sets setting."""
+    display = user_config.get("display") if isinstance(user_config, dict) else None
+    if not isinstance(display, dict):
+        return False
+    platforms = display.get("platforms")
+    if not isinstance(platforms, dict):
+        return False
+    platform_cfg = platforms.get(platform_key)
+    return isinstance(platform_cfg, dict) and setting in platform_cfg
+
+
+@dataclass(frozen=True, slots=True)
+class TurnDisplayConfig:
+    """Resolved display/verbosity settings for one gateway agent turn."""
+
+    progress_mode: str                      # off | new | all | verbose | log
+    progress_grouping: str                  # accumulate | separate
+    tool_progress_enabled: bool
+    live_status_mode: str                   # full | verb | off
+    log_mode_enabled: bool
+    interim_assistant_messages_mode: str    # off | raw | generic
+    interim_assistant_messages_enabled: bool
+    thinking_mode: str                      # off | raw | generic
+    thinking_enabled: bool
+    needs_progress_queue: bool
+    tool_preview_length: int
+    friendly_tool_labels: bool
+
+
+def resolve_surface_mode(
+    user_config: dict,
+    platform_key: str,
+    platform_value: str,
+    setting: str,
+    *,
+    default: bool = False,
+    require_platform_override_for: Iterable[str] | None = None,
+    allow_generic: bool = False,
+) -> str:
+    """Return off|raw|generic for a gateway visibility surface."""
+    if require_platform_override_for:
+        if platform_value in set(require_platform_override_for) and not (
+            has_platform_display_override(user_config, platform_key, setting)
+        ):
+            return "off"
+    value = resolve_display_setting(user_config, platform_key, setting, default)
+    if isinstance(value, str) and value.strip().lower() == "generic":
+        return "generic" if allow_generic else "off"
+    return "raw" if bool(value) else "off"
+
+
+def resolve_turn_display_config(
+    user_config: dict,
+    platform: Any,
+    platform_key: str,
+    *,
+    env_tool_progress: Any = _UNSET,
+) -> TurnDisplayConfig:
+    """Resolve every display setting one gateway turn needs.
+
+    Args:
+        user_config: The full user config dict.
+        platform: The turn's platform (enum or raw string).
+        platform_key: The key used for per-platform config lookups.
+        env_tool_progress: Override for ``HERMES_TOOL_PROGRESS_MODE``. Exists so
+            tests can exercise env-vs-config precedence without mutating the
+            process environment; defaults to reading the real variable.
+
+    Returns:
+        A frozen ``TurnDisplayConfig``.
+    """
+    if not isinstance(user_config, dict):
+        user_config = {}
+    display_cfg = user_config.get("display")
+    if not isinstance(display_cfg, dict):
+        display_cfg = {}
+    platform_value = gateway_platform_value(platform)
+
+    env_tp = (
+        os.getenv("HERMES_TOOL_PROGRESS_MODE")
+        if env_tool_progress is _UNSET
+        else env_tool_progress
+    )
+
+    # The env var is a fallback, not an override: it only wins when nothing in
+    # the config speaks to tool_progress at any of the three levels (global,
+    # per-platform, or the legacy overrides map).
+    platforms_cfg = display_cfg.get("platforms") or {}
+    platform_cfg = platforms_cfg.get(platform_key) or {}
+    legacy_overrides = display_cfg.get("tool_progress_overrides") or {}
+    configured = (
+        "tool_progress" in display_cfg
+        or (isinstance(platform_cfg, dict) and "tool_progress" in platform_cfg)
+        or (isinstance(legacy_overrides, dict) and platform_key in legacy_overrides)
+    )
+    resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+    progress_mode = (
+        env_tp if env_tp and not configured else (resolved_tp or env_tp or "all")
+    )
+
+    no_chat_progress = platform_value in _NO_CHAT_PROGRESS
+    tool_progress_enabled = progress_mode not in {"off", "log"} and not no_chat_progress
+    # "log" mode writes tool calls to ~/.hermes/logs/tool_calls.log instead of
+    # the chat (#3459 / #3458). Gateway-only by design.
+    log_mode_enabled = progress_mode == "log" and not no_chat_progress
+
+    interim_mode = resolve_surface_mode(
+        user_config, platform_key, platform_value,
+        "interim_assistant_messages",
+        default=True,
+        require_platform_override_for=_REQUIRE_PLATFORM_OPT_IN,
+    )
+    interim_enabled = not no_chat_progress and interim_mode != "off"
+
+    # thinking_progress is independent of tool_progress, but shares the progress
+    # queue infrastructure, so it can require the queue on its own.
+    thinking_mode = resolve_surface_mode(
+        user_config, platform_key, platform_value,
+        "thinking_progress",
+        default=False,
+        require_platform_override_for=_REQUIRE_PLATFORM_OPT_IN,
+    )
+    thinking_enabled = thinking_mode != "off"
+
+    preview_len = resolve_display_setting(
+        user_config, platform_key, "tool_preview_length", 0
+    )
+    try:
+        preview_len = int(preview_len) if preview_len else 0
+    except (TypeError, ValueError):
+        preview_len = 0
+
+    return TurnDisplayConfig(
+        progress_mode=progress_mode,
+        progress_grouping=(
+            resolve_display_setting(user_config, platform_key, "tool_progress_grouping")
+            or "accumulate"
+        ),
+        tool_progress_enabled=tool_progress_enabled,
+        live_status_mode=resolve_display_setting(
+            user_config, platform_key, "live_status", "full"
+        ),
+        log_mode_enabled=log_mode_enabled,
+        interim_assistant_messages_mode=interim_mode,
+        interim_assistant_messages_enabled=interim_enabled,
+        thinking_mode=thinking_mode,
+        thinking_enabled=thinking_enabled,
+        needs_progress_queue=tool_progress_enabled or thinking_enabled,
+        tool_preview_length=preview_len,
+        friendly_tool_labels=bool(
+            resolve_display_setting(
+                user_config, platform_key, "friendly_tool_labels", True
+            )
+        ),
+    )

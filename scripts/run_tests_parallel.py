@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -306,7 +307,19 @@ def _run_one_file_once(
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+
+    child_env = os.environ
+    cov_dir = os.environ.get("HERMES_COVERAGE_DIR")
+    if cov_dir:
+        # One coverage data file per TEST FILE, named after the file's path
+        # rather than the pid. The retry path (_run_one_file re-invokes this on
+        # failure) must overwrite the first attempt's data, not leave a second
+        # orphan file behind — a pid-based name would accumulate one file per
+        # attempt and double-count the retried file's lines after combine.
+        child_env = dict(os.environ)
+        slug = str(file).replace(os.sep, "_").replace(".", "_")
+        child_env["COVERAGE_FILE"] = os.path.join(cov_dir, f".coverage.{slug}")
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -315,7 +328,7 @@ def _run_one_file_once(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=os.environ,
+        env=child_env,
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -725,6 +738,33 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--cov",
+        metavar="TARGET",
+        help=(
+            "Measure coverage of TARGET (a module path, e.g. 'gateway.run') across "
+            "the run, then combine and report. Opt-in and local-only — CI does not "
+            "pass this and there is no coverage gate. "
+            "This is OUR flag, not a passthrough to pytest, because coverage needs "
+            "lifecycle management the bare flag can't do: one pytest subprocess per "
+            "test file means one coverage data file per test file, and they must be "
+            "given distinct COVERAGE_FILE paths and then combined. Passing --cov "
+            "straight to pytest would have every subprocess race on one .coverage. "
+            "KNOWN LIMITATION: coverage.py's `source` targeting imports TARGET at "
+            "session start to instrument it, and importing gateway.run bridges "
+            "config into os.environ at import time. That pre-import perturbs tests "
+            "which assert on that bridging: `tests/gateway/ --cov=gateway.run` "
+            "reports ~63 failures across 21 files (test_config.py, "
+            "test_display_config.py, the platform-gating tests, …) that all pass "
+            "with the flag off. The COVERAGE NUMBERS ARE STILL VALID — the other "
+            "~9,960 tests ran and were measured — but treat failures in a --cov run "
+            "as suspect until reproduced without it. Measured, not guessed: 0 "
+            "failures without the flag, 63 with it, and the repro line printed for "
+            "each failing file names --cov explicitly. Filesystem-path targeting "
+            "(--cov=gateway/run.py) avoids the pre-import but silently measures "
+            "nothing, so it is not a workaround."
+        ),
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -753,6 +793,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "--cov",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -813,6 +854,19 @@ def main() -> int:
             sys.exit(2)
 
     repo_root = Path(__file__).resolve().parent.parent
+
+    # Coverage: append the pytest-cov flags every child needs, and publish the
+    # data directory through the environment so _run_one_file_once can hand each
+    # subprocess its own COVERAGE_FILE. --cov-report= (empty) suppresses the
+    # per-subprocess report; the only one worth reading is the combined report
+    # this process prints at the end.
+    cov_dir: Path | None = None
+    if args.cov:
+        cov_dir = repo_root / ".coverage-data"
+        shutil.rmtree(cov_dir, ignore_errors=True)
+        cov_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["HERMES_COVERAGE_DIR"] = str(cov_dir)
+        pytest_passthrough = pytest_passthrough + [f"--cov={args.cov}", "--cov-report="]
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
@@ -975,6 +1029,37 @@ def main() -> int:
     if file_times:
         _save_durations(file_times, repo_root)
         print(f"  Durations cached to {_DURATIONS_FILE} ({len(file_times)} files)")
+
+    # Combine the per-test-file coverage data into one report. This is the only
+    # post-run hook in the runner, so it lives next to the durations write.
+    # Timed and printed explicitly: on a targeted run (tests/gateway/) this is
+    # seconds, but combine is single-threaded and scales with the number of data
+    # files, so anyone who points --cov at the full ~2,200-file suite should see
+    # in the output why it got slow rather than guess.
+    if cov_dir is not None:
+        data_files = sorted(cov_dir.glob(".coverage.*"))
+        print(f"\n=== Coverage: combining {len(data_files)} data files ===")
+        combine_start = time.monotonic()
+        combined = cov_dir / ".coverage"
+        env = {**os.environ, "COVERAGE_FILE": str(combined)}
+        # Capture rather than inherit stdout: the runner writes its own progress
+        # to stdout and a bare inherit swallowed the report in practice.
+        comb = subprocess.run(
+            [sys.executable, "-m", "coverage", "combine", *map(str, data_files)],
+            cwd=repo_root, env=env, capture_output=True, text=True,
+        )
+        if comb.returncode != 0:
+            print(f"  ⚠ coverage combine exited {comb.returncode}; skipping report")
+            print(comb.stderr.rstrip())
+        else:
+            print(f"  combined in {time.monotonic() - combine_start:.1f}s")
+            rep = subprocess.run(
+                [sys.executable, "-m", "coverage", "report", "--show-missing"],
+                cwd=repo_root, env=env, capture_output=True, text=True,
+            )
+            print(rep.stdout.rstrip() or "  (no coverage data to report)")
+            if rep.returncode != 0:
+                print(rep.stderr.rstrip())
 
     # Per-file time distribution (throwaway diagnostic — shows how
     # subprocess time is distributed so we can see if startup dominates).

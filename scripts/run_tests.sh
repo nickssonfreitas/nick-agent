@@ -101,4 +101,16 @@ exec env -i \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
+  ${COVERAGE_RCFILE:+COVERAGE_RCFILE="$COVERAGE_RCFILE"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+
+# On the allowlist entries above: this env -i exists so no ambient credential
+# can reach a test, so every addition has to be justifiable as non-secret.
+#   COVERAGE_RCFILE — a path to a coverage config file. Only forwarded when the
+#     caller already set it; carries no secret.
+# Deliberately NOT allowlisted:
+#   COVERAGE_FILE — must differ per subprocess (one data file per test file), so
+#     run_tests_parallel.py sets it per-Popen instead. A single inherited value
+#     would have every worker race on one path.
+#   HERMES_COVERAGE_DIR — set by run_tests_parallel.py itself after it parses
+#     --cov, so it is created inside the sandbox rather than inherited into it.
