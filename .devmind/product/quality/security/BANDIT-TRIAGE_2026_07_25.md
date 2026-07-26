@@ -6,8 +6,8 @@
 | **Source report** | `.security/reports/20260725T193649Z/bandit.json` |
 | **Scope** | production code (`tests/` excluded), severity MEDIUM+ |
 | **Findings triaged** | 270 of 270 |
-| **Confirmed real** | 1 (low severity) |
-| **Fixed in this pass** | 2 (annotation) |
+| **Confirmed real** | 1 (very low, after calibration) |
+| **Fixed in this pass** | 3 (1 hardening + 2 annotations) |
 | **False positives** | 267 |
 
 Companion to `SEMGREP-TRIAGE_2026_07_24.md`. Same method: every finding was
@@ -27,8 +27,8 @@ pass closed every `B324` weak-hash finding.
 
 **File:** `tools/read_extract.py` (`_zip_xml`, plus 5 sibling call sites)
 **Rule:** `B314` (`xml.etree.ElementTree.fromstring`)
-**Severity:** Low — denial of service, not code execution
-**Status:** OPEN (needs a dependency decision)
+**Severity:** Very low — see the calibration below, which walked this back
+**Status:** **FIXED** — defusedxml preferred with a stdlib fallback, plus tests
 
 `_zip_xml` parses XML pulled straight out of a user-supplied `.xlsx` / `.docx`:
 
@@ -39,20 +39,55 @@ def _zip_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
     return ET.fromstring(zf.read(name))
 ```
 
-Modern CPython already blocks the dangerous half of this class: external entity
-resolution and DTD retrieval are off, so this is **not** XXE and not file
-disclosure. What remains is entity-expansion DoS — the "billion laughs" and
-quadratic-blowup shapes — which the Python docs still list as applicable to
-`xml.etree`. A crafted document handed to the extractor can burn memory and CPU.
+### Calibration — this finding is weaker than it first looked
 
-Fix is `defusedxml`, a drop-in replacement (`from defusedxml.ElementTree import
-fromstring`). It adds a dependency, which is why this is written up rather than
-applied unilaterally. The alternative — bounding the decompressed size and
-parse time before handing bytes to `ET` — avoids the dependency but is more code
-and easier to get subtly wrong.
+The initial writeup claimed the stdlib parses a billion-laughs document without
+complaint. **That was wrong, and measuring it is what caught the error.**
+Against expat 2.6.1:
 
-Same rule also fires on `watch_rss.py` and `search_arxiv.py`, which parse remote
-feeds. Same reasoning, same fix.
+| Payload | stdlib `xml.etree` | defusedxml |
+|---------|--------------------|------------|
+| 3 levels, fan 3 | expands to 576 B | `EntitiesForbidden` |
+| 5 levels, fan 5 | expands to 40 KB | `EntitiesForbidden` |
+| 8 levels, fan 8 | `ParseError` (expat limit) | `EntitiesForbidden` |
+| 12 levels, fan 8 | `ParseError` (expat limit) | `EntitiesForbidden` |
+
+Modern CPython already blocks the dangerous parts of this class. External
+entity resolution and DTD retrieval are off, so this is **not** XXE and not file
+disclosure, and expat's own amplification limit rejects the high-fan-out bombs
+that make billion-laughs famous. What survives is *bounded* amplification below
+that threshold — roughly 64 bytes into 40 KB — which is a nuisance, not a DoS.
+
+So the honest severity is very low, and the change below is defense in depth
+rather than closing an open hole. It is still worth having: defusedxml refuses
+entity declarations outright instead of depending on a threshold in a C library,
+and it is what `plugins/security-guidance` already tells contributors to use.
+
+### What was done
+
+`defusedxml` turned out to be **already a declared dependency** (`wecom` extra,
+adopted for exactly this reason on the WeCom callback path), so there was no new
+dependency to weigh — only whether to reach for it here.
+
+`tools/read_extract.py` now prefers `defusedxml.ElementTree.fromstring` and
+falls back to the stdlib when the extra is absent, mirroring the try/except
+pattern in `wecom/callback_adapter.py`. One subtlety that would have broken the
+module's contract: defusedxml rejects with `DefusedXmlException`, which is **not**
+a `ParseError` subclass, so it had to join the caught set — otherwise a rejected
+document would escape as an unhandled error instead of `ExtractionError`.
+
+Two tests were added: one asserting the invariant that holds under either parser
+(a high-amplification bomb must surface as `ExtractionError`), and one gated on
+`XML_HARDENED` covering the case that actually distinguishes them (low-fan
+entities, which the stdlib expands and defusedxml refuses).
+
+**Still conditional:** the guard only applies where the `wecom` extra is
+installed. Making it unconditional means promoting `defusedxml` from that extra
+to a core dependency — a small pure-Python package. That remains a call for
+whoever owns the dependency surface.
+
+Same rule fires on `watch_rss.py` and `search_arxiv.py`, which parse remote
+feeds. Same reasoning; not changed in this pass.
 
 ---
 
@@ -104,9 +139,18 @@ should not be mixed into a security backlog.
 
 ---
 
-## 5. Suggested next action
+## 5. Open items
 
-Decide BND-001: adopt `defusedxml` for the three untrusted-XML entry points
-(`read_extract.py`, `watch_rss.py`, `search_arxiv.py`), or bound input size and
-parse time instead. It is the only finding in this triage that changes the
-security posture rather than the noise level.
+- **Promote `defusedxml` from the `wecom` extra to a core dependency**, so the
+  hardening in `read_extract.py` applies to every install instead of only those
+  with the extra. Small pure-Python package; the call belongs to whoever owns
+  the dependency surface.
+- **Apply the same swap to `watch_rss.py` and `search_arxiv.py`**, which parse
+  remote feeds under the same rule.
+- **Pin model revisions** on the `from_pretrained` calls (`B615`), and keep
+  `trust_remote_code=True` confined to operator-run scripts — it must never
+  reach an agent-invoked path.
+
+None of these change the current risk posture materially; they close the gap
+between what the code does and what `plugins/security-guidance` already tells
+contributors to do.
