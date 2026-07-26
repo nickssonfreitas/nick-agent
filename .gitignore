@@ -50,9 +50,12 @@ data/*
 node_modules
 browser-use/
 agent-browser/
-# Private keys
+# Private keys / credential exports (security checklist: OWASP secrets rule —
+# never let a key or credential file get committed by accident).
 *.ppk
 *.pem
+*.key
+credentials.json
 privvy*
 images/
 __pycache__/

@@ -1870,19 +1870,15 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
 
 def _run_state_db_auto_maintenance(session_db) -> None:
-    """Call ``SessionDB.maybe_auto_prune_and_vacuum`` using current config.
+    """Run session-store retention + one-off migrations using current config.
 
-    Reads the ``sessions:`` section from config.yaml via
-    :func:`hermes_cli.config.load_config` (the authoritative loader that
-    deep-merges DEFAULT_CONFIG, so unmigrated configs still get default
-    values). Honours ``auto_prune`` / ``retention_days`` /
-    ``vacuum_after_prune`` / ``min_interval_hours``, and delegates to the
-    DB. Never raises — maintenance must never block interactive startup.
+    Retention goes through :func:`session_retention.run_configured_retention`,
+    the shared entry point that reads ``sessions:`` from config.yaml and
+    shields history predating the policy. Never blocks startup.
     """
     if session_db is None:
         return
     try:
-        from hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home
         _hermes_home_maint = _get_hermes_home()
 
@@ -1910,14 +1906,12 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         except Exception as _finalize_exc:
             logger.debug("Orphan compression finalize skipped: %s", _finalize_exc)
 
-        cfg = (_load_full_config().get("sessions") or {})
-        if not cfg.get("auto_prune", False):
-            return
-        session_db.maybe_auto_prune_and_vacuum(
-            retention_days=int(cfg.get("retention_days", 90)),
-            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
-            vacuum=bool(cfg.get("vacuum_after_prune", True)),
-            sessions_dir=_hermes_home_maint / "sessions",
+        # Interactive surface: the notice is printed, and config resolution
+        # lives in the shared entry point so this path cannot drift from the
+        # gateway's.
+        from session_retention import run_configured_retention
+        run_configured_retention(
+            session_db, sessions_dir=_hermes_home_maint / "sessions"
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)

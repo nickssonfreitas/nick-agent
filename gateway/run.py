@@ -3071,6 +3071,21 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 _RECONNECT_BACKOFF_CAP = 300
 
 
+def _run_state_db_retention(session_db, sessions_dir) -> None:
+    """Gateway-startup session retention, via the shielded shared entry point.
+
+    Headless: ``notify=None`` logs the one-time notice at WARNING instead of
+    printing to a daemon's stdout, leaving the interactive one-shot intact.
+    """
+    if session_db is None:
+        return
+    try:
+        from session_retention import run_configured_retention
+        run_configured_retention(session_db, sessions_dir=sessions_dir, notify=None)
+    except Exception as exc:
+        logger.debug("state.db auto-maintenance skipped: %s", exc)
+
+
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
@@ -3418,26 +3433,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
 
-        # Opportunistic state.db maintenance: prune ended sessions older
-        # than sessions.retention_days + optional VACUUM. Tracks last-run
-        # in state_meta so it only actually executes once per
-        # sessions.min_interval_hours.  Gateway is long-lived so blocking
-        # a few seconds once per day is acceptable; failures are logged
-        # but never raised.
+        # Opportunistic retention sweep (shielded), at most once per
+        # sessions.min_interval_hours. Construction-time, before the loop
+        # serves traffic, so the sync DB and a few blocked seconds are fine.
         if self._session_db is not None:
-            try:
-                from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
-                if _sess_cfg.get("auto_prune", False):
-                    # Construction-time, before the loop serves traffic; sync DB is fine.
-                    self._session_db._db.maybe_auto_prune_and_vacuum(
-                        retention_days=int(_sess_cfg.get("retention_days", 90)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                        sessions_dir=self.config.sessions_dir,
-                    )
-            except Exception as exc:
-                logger.debug("state.db auto-maintenance skipped: %s", exc)
+            _run_state_db_retention(self._session_db._db, self.config.sessions_dir)
 
         # Opportunistic shadow-repo cleanup — deletes orphan/stale
         # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via

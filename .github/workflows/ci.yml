@@ -266,8 +266,22 @@ jobs:
       - review-labels
       - osv-scanner
       # comment-live is a polling job — it doesn't block the gate.
-      # we don't require docker to pass rn because it's so slow lol
-      # - docker
+      # docker is listed as a dependency so the gate always waits for it and
+      # can read its result, but it's only a REQUIRED result (see the
+      # docker_meta check in the evaluate step below) when the PR actually
+      # touches Docker-related paths. That's the same detect-changes /
+      # classify_changes.py signal the docker job itself is already gated on
+      # (ci.yml's `docker:` job: python || frontend || docker_meta) and that
+      # docker-lint uses — reused here instead of inventing a second
+      # classifier. Un-scoped, docker was excluded entirely ("so slow lol")
+      # because it also runs — and would have to block merges — on every
+      # PR that merely touches Python or frontend code, not just Docker
+      # config. Scoping the requirement to docker_meta gets the safety back
+      # (a real Dockerfile/docker-compose/docker/ regression still blocks)
+      # without reintroducing that blanket slowdown. `if: always()` above
+      # plus the icon rule below already treat a `skipped` docker result as
+      # passing, so a PR that never triggered the job isn't penalized either.
+      - docker
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -278,16 +292,27 @@ jobs:
         id: evaluate
         env:
           NEEDS: ${{ toJSON(needs) }}
+          DOCKER_META: ${{ needs.detect.outputs.docker_meta }}
         run: |
           echo "$NEEDS" | python3 -c "
-          import json, sys
+          import json, os, sys
           needs = json.load(sys.stdin)
+          docker_meta = os.environ.get('DOCKER_META') == 'true'
           # Emit compact {job_name: result} for the comment assembler.
           compact = {name: info['result'] for name, info in needs.items()}
           print(f'needs-json={json.dumps(compact)}')
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
-          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          failed = []
+          for name, info in needs.items():
+              if info['result'] != 'failure':
+                  continue
+              if name == 'docker' and not docker_meta:
+                  # docker ran (and failed) only because this PR touched
+                  # Python/frontend code, not Docker config — don't block
+                  # the merge on it. See the needs-list comment above.
+                  continue
+              failed.append(name)
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'

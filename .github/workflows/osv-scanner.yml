@@ -16,8 +16,18 @@ name: OSV-Scanner
 #
 # Uses Google's officially-recommended reusable workflow, pinned by SHA.
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
-# fail-on-vuln is disabled so the job does not block merges on pre-existing
-# vulnerabilities in pinned deps that we may need to patch deliberately.
+#
+# fail-on-vuln is enabled: this gate blocks merges on any NEW vulnerability
+# in a pinned dependency. Pre-existing findings that are deliberately
+# deferred (a version bump that needs testing, a transitive pin capped by
+# an unrelated dependency, a dev-only tool with no production reach) are
+# NOT handled by disabling this gate — they are named individually, with a
+# reason and a re-triage date, in ./osv-scanner.toml (auto-detected by
+# osv-scanner from the repo root, no --config flag needed). A finding with
+# no entry in that file fails the build; see osv-scanner.toml's header for
+# how to add one. This was flipped from fail-on-vuln: false on 2026-07-24
+# after auditing the residual backlog down to five explicitly-deferred
+# CVEs (commit 6269bc3ba patched six pre-existing ones the day before).
 #
 # The reusable workflow can't emit custom outputs, so a wrapper job
 # downloads the SARIF result and summarizes the vulnerability count into
@@ -48,7 +58,8 @@ jobs:
         --lockfile=uv.lock
         --lockfile=package-lock.json
         --lockfile=website/package-lock.json
-      fail-on-vuln: false
+        --config=osv-scanner.toml
+      fail-on-vuln: true
 
   emit-status:
     name: Emit review status
