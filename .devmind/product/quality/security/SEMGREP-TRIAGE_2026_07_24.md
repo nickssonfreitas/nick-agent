@@ -342,6 +342,18 @@ closed.
   and setuptools 81.0.0. Those were never invisible, because osv-scanner reads
   `uv.lock` on its own, but a green pip-audit covering a quarter of the installed
   surface is worse than no scanner.
+  - Both findings it now surfaces are **capped upstream — do not "fix" either**.
+    `setuptools` 81.0.0 (PYSEC-2026-3447) is already a deliberate decision
+    recorded inline in `pyproject.toml`: 83.0.0 breaks torch >=2.11, which caps
+    `setuptools<82`, and the vulnerability is sdist-build-time only. The
+    build-system table pins `setuptools>=77.0,<83` to match.
+    `pynacl` 1.5.0 (PYSEC-2026-3002, moderate — libsodium incomplete list of
+    disallowed inputs) is capped by `discord.py[voice]==2.7.1`, which requires
+    `PyNaCl<1.6,>=1.5.0`; the patched 1.6.2 is outside that range. Dropping the
+    `[voice]` extra would remove the package entirely but is not an option —
+    voice is live code (`scripts/discord-voice-doctor.py`, `_voice_clients` in
+    the adapter, `tests/gateway/test_discord_voice_mixer.py`, and the voice-mode
+    guide on the site). Blocked until discord.py raises the cap.
 - **`CKV_GHA_7` on four workflows: suppressed with justification**
   (`e893c6e92`, `851ebceb5`). Audited before suppressing: the rule's real vector
   is `${{ inputs.X }}` interpolated into a `run:` block, and none of the four do
