@@ -516,6 +516,20 @@ scan_osv() {
     >"${REPORT_DIR}/osv-scanner.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
+
+  # O osv-scanner sai 127 quando TODOS os achados foram filtrados pelo
+  # osv-scanner.toml, e 1 quando sobra algum. Como a contagem e zero nos dois
+  # casos de "nada a reportar", um rc=127 caia no ramo de erro do
+  # classify_json_report e marcava a ferramenta como `error`, o que invalida a
+  # auditoria inteira — apesar de o scan ter rodado ate o fim e escrito um
+  # relatorio JSON valido. Confirmado por teste controlado em 2026-07-26:
+  # com o osv-scanner.toml presente (7 vulnerabilidades filtradas) o rc e 127;
+  # movendo o mesmo arquivo de lado, o rc volta a ser 1.
+  #
+  # Normalizamos so esse caso. Qualquer outro rc diferente de 0/1/127 continua
+  # sendo falha real e segue invalidando o run, que e o comportamento desejado.
+  (( rc == 127 )) && rc=0
+
   classify_json_report osv-scanner "${report}" "${rc}" \
     '[.results[]?.packages[]?.vulnerabilities[]?] | length' "Scan recursivo de manifests e lockfiles."
 }
@@ -524,10 +538,27 @@ scan_checkov() {
   section "Checkov — IaC, Docker e configurações"
   local report="${REPORT_DIR}/checkov.json" stderr="${REPORT_DIR}/checkov.stderr.log" rc
   set +e
+  # Um `node_modules.bak` transitorio (o que sobra de um `mv node_modules ...`
+  # durante depuracao de dependencia) nao casava nenhum dos padroes e entrava
+  # no relatorio: no baseline de 2026-07-25 ele sozinho gerou os 6 findings de
+  # CKV_DOCKER_* aqui, todos em `@codemirror/legacy-modes/mode/dockerfile.*`,
+  # e 121 dos 126 do osv-scanner. Contagem que muda conforme o que o dev
+  # deixou no disco nao e baseline.
+  #
+  # As variantes vao como LITERAIS, uma por padrao, e nao como
+  # `node_modules([^/]*)/` ou `[^/]+\.(bak|old)/`. O `--skip-path` do checkov
+  # decide se ele PODA o diretorio, e a poda so acontece quando o padrao casa
+  # o caminho do diretorio de forma direta: com classe de caractere ele desce
+  # nos 1.4G de node_modules e varre arquivo a arquivo. Medido em 2026-07-26:
+  # 46s com literais contra >240s (timeout, sem terminar) com `([^/]*)`. Pior,
+  # a versao com classe silenciosamente DESLIGA a exclusao que ja funcionava.
+  # Ao adicionar uma variante nova aqui, escreva o nome inteiro.
   checkov -d "${PROJECT_ROOT}" -o json --quiet \
     --skip-path '^\.git/' \
-    --skip-path '^\.security/(bin|tools|logs|reports)/' \
+    --skip-path '^\.security/(bin|tools|logs|reports|cache)/' \
     --skip-path '(^|/)node_modules/' \
+    --skip-path '(^|/)node_modules\.bak/' \
+    --skip-path '(^|/)node_modules\.old/' \
     --skip-path '(^|/)(\.venv|venv)/' \
     --skip-path '(^|/)(dist|build)/' \
     >"${report}" 2>"${stderr}"
@@ -552,12 +583,18 @@ scan_trivy_fs() {
     --skip-dirs "${PROJECT_ROOT}/.security/tools" \
     --skip-dirs "${PROJECT_ROOT}/.security/logs" \
     --skip-dirs "${PROJECT_ROOT}/.security/reports" \
+    --skip-dirs "${PROJECT_ROOT}/.security/cache" \
     --skip-dirs "${PROJECT_ROOT}/node_modules" \
     --skip-dirs "${PROJECT_ROOT}/.venv" \
     --skip-dirs "${PROJECT_ROOT}/venv" \
     --skip-dirs '**/node_modules' \
     --skip-dirs '**/.venv' \
     --skip-dirs '**/venv' \
+    --skip-dirs '**/node_modules.*' \
+    --skip-dirs '**/*.bak' \
+    --skip-dirs '**/*.old' \
+    --skip-dirs '**/*.orig' \
+    --skip-dirs '**/*.tmp' \
     "${PROJECT_ROOT}" >"${REPORT_DIR}/trivy-filesystem.stdout.log" 2>"${stderr}"
   rc=$?
   set -e
