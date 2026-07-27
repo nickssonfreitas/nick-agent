@@ -46,15 +46,19 @@ readonly SOURCE_SNAPSHOT="${TEMP_ROOT}/source"
 
 readonly FAIL_ON_FINDINGS="${FAIL_ON_FINDINGS:-1}"
 # Sob demanda, nao por padrao. O CodeQL constroi um banco por linguagem e roda
-# as suites security-and-quality de Python e JS/TS; num repo deste tamanho isso
-# leva o scan de ~10 min para mais de uma hora. Um gate que ninguem roda porque
-# demora demais protege menos que um gate rapido rodado sempre, entao o loop
-# diario fica leve e o SAST profundo e explicito:
+# as suites security-and-quality de Python e JS/TS:
 #
 #   RUN_CODEQL=1 ./.security/scan.sh
 #
-# O lugar natural para RUN_CODEQL=1 e um job nightly ou de pre-release, nao o
-# pre-commit. Ligar aqui de volta e uma linha, mas encarece toda auditoria.
+# Custo medido em 2026-07-27 (nao estimado): 9min52s para as duas linguagens,
+# contra ~9 min do scan sem ele — ou seja, o run completo dobra, de ~9 para
+# ~19 min. A escolha inicial de deixar sob demanda partiu de uma estimativa de
+# "mais de uma hora" que a medicao desmentiu, entao o argumento de custo e bem
+# mais fraco do que parecia: ligar por padrao e defensavel.
+#
+# Mantido em 0 porque a decisao e do time, nao do numero sozinho. Para o
+# CI valer a pena ligar em pre-release ou nightly; para o loop local, dobrar o
+# tempo de cada auditoria ainda pesa. Trocar para 1 aqui e uma linha.
 readonly RUN_CODEQL="${RUN_CODEQL:-0}"
 readonly RUN_SHELLCHECK="${RUN_SHELLCHECK:-1}"
 # 'auto' exige --metrics=on (envia dados do projeto ao registry para escolher
@@ -696,15 +700,35 @@ scan_codeql_language() {
   rc_analyze=$?
   set -e
 
+  # Conta so o que a propria suite marca como relevante para seguranca, ou
+  # seja, resultados cuja regra tem `security-severity`. O SARIF continua
+  # inteiro no disco como evidencia; o que muda e o numero de manchete.
+  #
+  # Sem o filtro, o Python reportava 8.200 achados na primeira execucao
+  # (2026-07-27), dos quais 6.621 eram `recommendation` sem qualquer relacao
+  # com seguranca: py/empty-except (2.297), py/cyclic-import (1.610),
+  # py/import-and-import-from (1.081), variavel e import nao usados. Sao
+  # smells de manutencao legitimos, mas afogam os 1.276 achados de seguranca
+  # de verdade num relatorio cujo proposito e seguranca. Mesmo criterio ja
+  # aplicado ao bandit (contagem MEDIUM+, LOW preservado no JSON).
+  local total
+  total="$(jq -r '[.runs[]?.results[]?] | length' "${report}" 2>/dev/null || echo 0)"
+
   classify_json_report "codeql-${language}" "${report}" "${rc_analyze}" \
-    '[.runs[]?.results[]?] | length' "Suite security-and-quality para ${label}."
+    '[ .runs[]? as $r
+       | ($r.tool.driver.rules // []) as $rules
+       | $r.results[]?
+       | . as $res
+       | ($rules[] | select(.id == $res.ruleId) | .properties["security-severity"] // empty)
+     ] | length' \
+    "Suite security-and-quality para ${label}; contagem restrita a regras com security-severity (${total} achados no SARIF, incluindo qualidade)."
 }
 
 scan_codeql() {
   section "CodeQL — análise profunda"
   if [[ "${RUN_CODEQL}" == "0" ]]; then
     record_result codeql skipped 0 0 "" \
-      "Sob demanda (padrão RUN_CODEQL=0): custa ~1h contra ~10min do scan completo. Rode RUN_CODEQL=1 ./.security/scan.sh para SAST profundo."
+      "Sob demanda (padrão RUN_CODEQL=0): +9min52s medidos, dobra o run de ~9 para ~19 min. Rode RUN_CODEQL=1 ./.security/scan.sh para SAST profundo."
     return
   fi
   if ! command_exists codeql; then

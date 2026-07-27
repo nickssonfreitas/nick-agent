@@ -50,6 +50,12 @@ data/*
 node_modules
 browser-use/
 agent-browser/
+# Saída gerada da skill graphify (graph.json + cache de AST): 74M em ~590
+# arquivos. Sem ignore ela entra no snapshot da auditoria e quebra dois
+# scanners — 27 dos 28 findings do gitleaks em 2026-07-27 vinham dos
+# fragmentos de código no cache de AST, e o semgrep-core morria com SIGSEGV
+# tentando parsear os JSON gerados. Artefato de ferramenta, nunca versionado.
+graphify-out/
 # Private keys / credential exports (security checklist: OWASP secrets rule —
 # never let a key or credential file get committed by accident).
 *.ppk

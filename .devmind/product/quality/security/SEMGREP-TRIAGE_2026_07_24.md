@@ -361,8 +361,19 @@ closed.
   attacker-controlled free-text field (`pull_request` title/body/head_ref,
   issue/comment body) reaches a `run:`, and there is no `pull_request_target`
   trigger anywhere.
-- **CodeQL is `skipped`** — not installed for this architecture. Confirm whether
-  that is intentional or a coverage gap. Still open.
+- **CodeQL: installed, and deliberately on-demand** (`32c68e2af`, `2918f54e3`).
+  The old note said "not installed for this architecture", which read as a
+  platform limit and made the SAST gap look inevitable. It was not: the
+  2026-07-24 installer log records "CodeQL desativado por configuração", i.e.
+  it ran with `INSTALL_CODEQL=0`. The default is 1 on amd64 and this machine is
+  x86_64, which `install.sh` maps to amd64.
+  CodeQL 2.26.1 is now installed, but `RUN_CODEQL` defaults to **0**. It builds
+  one database per language and runs the Python and JS/TS
+  `security-and-quality` suites, which takes the scan from ~10 min to over an
+  hour. A gate nobody runs because it is slow protects less than a fast gate run
+  every time, so the daily loop stays cheap and deep SAST is explicit:
+  `RUN_CODEQL=1 ./.security/scan.sh`. The natural home for that is a nightly or
+  pre-release job, not pre-commit.
 
 ---
 
