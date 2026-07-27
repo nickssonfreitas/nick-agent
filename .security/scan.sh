@@ -15,6 +15,8 @@
 # Variáveis opcionais:
 #   FAIL_ON_FINDINGS=1          Retorna exit code 1 se houver findings (padrão: 1)
 #   RUN_CODEQL=1                Executa CodeQL quando instalado (padrão: 0 — ver nota)
+#   CODEQL_CREATE_ATTEMPTS=2    Tentativas de criar cada banco CodeQL (padrão: 2)
+#   CODEQL_RAM_MB=8192          Teto de memória do CodeQL em MB (padrão: 8192)
 #   RUN_SHELLCHECK=1            Analisa scripts shell (padrão: 1)
 #   SEMGREP_CONFIG=auto         Ruleset Semgrep (padrão: auto)
 #   CONTAINER_IMAGE=nome:tag    Também analisa uma imagem já construída com Trivy
@@ -60,6 +62,30 @@ readonly FAIL_ON_FINDINGS="${FAIL_ON_FINDINGS:-1}"
 # CI valer a pena ligar em pre-release ou nightly; para o loop local, dobrar o
 # tempo de cada auditoria ainda pesa. Trocar para 1 aqui e uma linha.
 readonly RUN_CODEQL="${RUN_CODEQL:-0}"
+# O extractor de JS/TS do CodeQL roda numa JVM, e em 2026-07-27 ela morreu com
+# SIGSEGV (exit 134) dentro de java.util.HashMap.resize ja compilado pelo C2. Nao
+# foi falta de recurso: o heap estava em 950 MB contra ~12 GB reservados, os
+# ciclos de GC eram normais e sobravam 16.375k dos 16.384k de stack. Tambem nao
+# foi arquivo venenoso — na repeticao, o mesmo dev-fixtures.ts que derrubou o
+# processo extraiu em 29 ms e o banco fechou com exit 0. Ou seja, uma falha
+# transitoria da propria JVM invalidava uma auditoria inteira de ~19 min, porque
+# qualquer ferramenta em erro marca o scan como invalido. Repetir e a resposta
+# proporcional; 2 tentativas cobrem o caso observado sem mascarar falha real,
+# que persiste nas duas e continua virando erro.
+readonly CODEQL_CREATE_ATTEMPTS="${CODEQL_CREATE_ATTEMPTS:-2}"
+# Teto de memoria do CodeQL. Sem ele, o evaluator se dimensiona pela RAM total
+# da maquina e nao pela livre: em 2026-07-27 o analyze de Python chegou a
+# VmRSS 10 GB e o earlyoom o matou com SIGTERM na query 128 de 174, invalidando
+# a auditoria:
+#
+#   earlyoom: mem avail: 4708 of 48091 MiB (9.79%), swap free: 0 of 8191 MiB
+#   earlyoom: sending SIGTERM to process "java": badness 918, VmRSS 10042 MiB
+#
+# O host tem 46 GB, mas ~27 GB ficam presos em outros processos e o swap vive
+# esgotado, entao a folga real e de ~19 GB e o earlyoom dispara abaixo de ~4,8 GB.
+# 8 GB deixam margem confortavel sobre esse piso sem estrangular o evaluator.
+# E um alvo suave, nao um limite rigido: mapas de arquivo podem furar o teto.
+readonly CODEQL_RAM_MB="${CODEQL_RAM_MB:-8192}"
 readonly RUN_SHELLCHECK="${RUN_SHELLCHECK:-1}"
 # 'auto' exige --metrics=on (envia dados do projeto ao registry para escolher
 # regras). Mantemos as metricas desligadas e fixamos um ruleset concreto.
@@ -673,20 +699,37 @@ scan_codeql_language() {
   local db="${TEMP_ROOT}/codeql-${language}"
   local report="${REPORT_DIR}/codeql-${language}.sarif"
   local stderr="${REPORT_DIR}/codeql-${language}.stderr.log"
-  local rc_create rc_analyze
+  local create_stdout="${REPORT_DIR}/codeql-${language}-create.stdout.log"
+  local rc_create rc_analyze attempt
 
-  set +e
-  codeql database create "${db}" \
-    --language="${language}" \
-    --source-root="${PROJECT_ROOT}" \
-    --overwrite \
-    >"${REPORT_DIR}/codeql-${language}-create.stdout.log" 2>"${stderr}"
-  rc_create=$?
-  set -e
+  # Os nomes canonicos guardam sempre a ultima tentativa, que e a que produziu o
+  # banco; tentativas que falharam sao preservadas com sufixo para nao apagar a
+  # evidencia do crash (o hs_err da JVM so faz sentido ao lado do log dela).
+  for (( attempt = 1; attempt <= CODEQL_CREATE_ATTEMPTS; attempt++ )); do
+    set +e
+    codeql database create "${db}" \
+      --language="${language}" \
+      --source-root="${PROJECT_ROOT}" \
+      --ram="${CODEQL_RAM_MB}" \
+      --overwrite \
+      >"${create_stdout}" 2>"${stderr}"
+    rc_create=$?
+    set -e
+
+    (( rc_create == 0 )) && break
+
+    if (( attempt < CODEQL_CREATE_ATTEMPTS )); then
+      mv -f -- "${create_stdout}" \
+        "${REPORT_DIR}/codeql-${language}-create.attempt${attempt}.stdout.log"
+      mv -f -- "${stderr}" \
+        "${REPORT_DIR}/codeql-${language}-create.attempt${attempt}.stderr.log"
+      warn "codeql-${language}: database create falhou (exit ${rc_create}); repetindo (tentativa $((attempt + 1)) de ${CODEQL_CREATE_ATTEMPTS})."
+    fi
+  done
 
   if (( rc_create != 0 )); then
     record_result "codeql-${language}" error 0 "${rc_create}" "${report#${PROJECT_ROOT}/}" \
-      "Falha ao criar banco CodeQL para ${label}."
+      "Falha ao criar banco CodeQL para ${label} em ${CODEQL_CREATE_ATTEMPTS} tentativa(s)."
     return
   fi
 
@@ -695,6 +738,7 @@ scan_codeql_language() {
     --format=sarif-latest \
     --sarif-category="${language}" \
     --output="${report}" \
+    --ram="${CODEQL_RAM_MB}" \
     --threads=0 \
     >"${REPORT_DIR}/codeql-${language}-analyze.stdout.log" 2>>"${stderr}"
   rc_analyze=$?
@@ -886,6 +930,10 @@ main() {
   require_bool FAIL_ON_FINDINGS "${FAIL_ON_FINDINGS}"
   require_bool RUN_CODEQL "${RUN_CODEQL}"
   require_bool RUN_SHELLCHECK "${RUN_SHELLCHECK}"
+  [[ "${CODEQL_CREATE_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] \
+    || die "CODEQL_CREATE_ATTEMPTS deve ser um inteiro maior que zero."
+  [[ "${CODEQL_RAM_MB}" =~ ^[1-9][0-9]*$ ]] \
+    || die "CODEQL_RAM_MB deve ser um inteiro maior que zero (megabytes)."
 
   section "Scan de segurança do Nick Agent"
   require_tools
