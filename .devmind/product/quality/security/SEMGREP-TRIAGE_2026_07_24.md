@@ -570,12 +570,23 @@ session, can make the server probe internal addresses, including
 `169.254.169.254`. The project's own `api-security` rule (OWASP API7) calls for
 blocking link-local and private ranges.
 
-The catch, and the reason this is not a one-line fix: local LLM endpoints are a
-first-class use case here (Ollama on `127.0.0.1:11434`, LM Studio), so a blanket
-loopback/RFC1918 block would break the feature. A targeted deny of the cloud
-metadata addresses (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`)
-buys most of the protection at no functional cost. **Left open deliberately** —
-it is a design decision about the provider-validation UX, not a patch.
+**Fixed 2026-07-27 in `0bd0a42d4`.** The catch was that local LLM endpoints are
+a first-class use case (Ollama on `127.0.0.1:11434`, LM Studio, a model server
+on the LAN), so a blanket loopback/RFC1918 block would have closed the metadata
+hole and broken local models in the same move. The repo already had the right
+primitive: `tools/url_safety.py::is_always_blocked_url`, documented as "the
+security floor" for callers that legitimately bypass the full `is_safe_url` and
+still need the non-negotiable deny. It blocks metadata hostnames and IPs,
+resolving DNS, while explicitly allowing loopback and private ranges. Both call
+sites now gate on it — reused, not reinvented.
+
+The regression test (`tests/hermes_cli/test_provider_validate_ssrf.py`) counts
+network attempts rather than checking the error message. The first version
+asserted `"metadata" in message` and passed *with the guard removed*: the
+endpoint's own `except Exception` swallows the failure and returns
+"Could not reach http://metadata.google.internal/...", which contains the word.
+Verified that it now fails on exactly the two metadata cases when the guard is
+stashed.
 
 ### `py/clear-text-logging-sensitive-data` (650) — taint-by-association
 
