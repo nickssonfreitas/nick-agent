@@ -14,7 +14,7 @@
 #
 # Variáveis opcionais:
 #   FAIL_ON_FINDINGS=1          Retorna exit code 1 se houver findings (padrão: 1)
-#   RUN_CODEQL=1                Executa CodeQL quando instalado (padrão: 1)
+#   RUN_CODEQL=1                Executa CodeQL quando instalado (padrão: 0 — ver nota)
 #   RUN_SHELLCHECK=1            Analisa scripts shell (padrão: 1)
 #   SEMGREP_CONFIG=auto         Ruleset Semgrep (padrão: auto)
 #   CONTAINER_IMAGE=nome:tag    Também analisa uma imagem já construída com Trivy
@@ -45,7 +45,17 @@ readonly TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/nick-agent-security-scan.XXXXXX
 readonly SOURCE_SNAPSHOT="${TEMP_ROOT}/source"
 
 readonly FAIL_ON_FINDINGS="${FAIL_ON_FINDINGS:-1}"
-readonly RUN_CODEQL="${RUN_CODEQL:-1}"
+# Sob demanda, nao por padrao. O CodeQL constroi um banco por linguagem e roda
+# as suites security-and-quality de Python e JS/TS; num repo deste tamanho isso
+# leva o scan de ~10 min para mais de uma hora. Um gate que ninguem roda porque
+# demora demais protege menos que um gate rapido rodado sempre, entao o loop
+# diario fica leve e o SAST profundo e explicito:
+#
+#   RUN_CODEQL=1 ./.security/scan.sh
+#
+# O lugar natural para RUN_CODEQL=1 e um job nightly ou de pre-release, nao o
+# pre-commit. Ligar aqui de volta e uma linha, mas encarece toda auditoria.
+readonly RUN_CODEQL="${RUN_CODEQL:-0}"
 readonly RUN_SHELLCHECK="${RUN_SHELLCHECK:-1}"
 # 'auto' exige --metrics=on (envia dados do projeto ao registry para escolher
 # regras). Mantemos as metricas desligadas e fixamos um ruleset concreto.
@@ -693,7 +703,8 @@ scan_codeql_language() {
 scan_codeql() {
   section "CodeQL — análise profunda"
   if [[ "${RUN_CODEQL}" == "0" ]]; then
-    record_result codeql skipped 0 0 "" "Desativado por RUN_CODEQL=0."
+    record_result codeql skipped 0 0 "" \
+      "Sob demanda (padrão RUN_CODEQL=0): custa ~1h contra ~10min do scan completo. Rode RUN_CODEQL=1 ./.security/scan.sh para SAST profundo."
     return
   fi
   if ! command_exists codeql; then
