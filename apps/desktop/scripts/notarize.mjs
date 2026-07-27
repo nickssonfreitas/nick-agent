@@ -35,13 +35,25 @@ function resolveApiKeyPath(rawValue) {
     throw new Error('APPLE_API_KEY must be a file path or inline .p8 key content')
   }
 
-  const tempPath = path.join(os.tmpdir(), `hermes-notary-${Date.now()}-${process.pid}.p8`)
-  fs.writeFileSync(tempPath, value, 'utf8')
+  // What lands here is the Apple Developer API private key in the clear, and it
+  // stays on disk for the whole `notarytool submit --wait`, which is minutes.
+  // The old form concatenated a predictable name (`Date.now()` + pid) into the
+  // temp dir and wrote it with the default mode, i.e. world-readable under a
+  // typical umask. On macOS `os.tmpdir()` honours the per-user TMPDIR launchd
+  // sets (`/var/folders/…`, mode 0700), so that was not the open exposure it
+  // looks like — but the moment TMPDIR is unset the fallback is `/tmp`, which
+  // is mode 1777. `mkdtempSync` removes both the guessable name and the
+  // permissive mode regardless of which directory is in play: the container is
+  // created 0700 with random suffix, and 0o600 pins the file itself.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-notary-'))
+  const tempPath = path.join(dir, 'key.p8')
+  fs.writeFileSync(tempPath, value, { encoding: 'utf8', mode: 0o600 })
   return {
     keyPath: tempPath,
     cleanup: () => {
       try {
-        fs.rmSync(tempPath, { force: true })
+        // Remove the directory, not just the key, or the 0700 container leaks.
+        fs.rmSync(dir, { recursive: true, force: true })
       } catch {
         // Best-effort cleanup.
       }

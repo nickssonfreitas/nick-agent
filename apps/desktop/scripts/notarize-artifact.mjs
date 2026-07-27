@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
@@ -34,11 +34,16 @@ function resolveApiKeyPath(rawValue) {
     throw new Error('APPLE_API_KEY must be a file path or inline .p8 key content')
   }
 
-  const tempPath = join(tmpdir(), `hermes-notary-${Date.now()}-${process.pid}.p8`)
-  writeFileSync(tempPath, value, 'utf8')
+  // Same handling as scripts/notarize.mjs — see the comment there. The Apple
+  // Developer API private key sits on disk in the clear for the duration of
+  // `notarytool submit --wait`, so it gets a 0700 container with a random name
+  // and a 0o600 file rather than a predictable path at the default umask.
+  const dir = mkdtempSync(join(tmpdir(), 'hermes-notary-'))
+  const tempPath = join(dir, 'key.p8')
+  writeFileSync(tempPath, value, { encoding: 'utf8', mode: 0o600 })
   return {
     keyPath: tempPath,
-    cleanup: () => rmSync(tempPath, { force: true })
+    cleanup: () => rmSync(dir, { recursive: true, force: true })
   }
 }
 
