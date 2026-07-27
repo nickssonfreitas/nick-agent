@@ -766,17 +766,65 @@ scan_codeql_language() {
   # scanners mediam escopos diferentes: 10 dos 15 py/overly-permissive-file
   # eram fixtures que criam arquivo com modo ruim de proposito, justamente
   # para testar que a deteccao funciona.
-  # shellcheck disable=SC2016 # $r/$rules/$res sao variaveis do jq, nao do shell
+  # Fora da contagem tambem o que nao e codigo-fonte deste projeto. O criterio e
+  # "rastreado pelo git", e nao um glob de caminho, porque glob erra nos dois
+  # sentidos: `/dist/` derrubaria plugins/kanban/dashboard/dist/index.js, que e
+  # IIFE escrito a mao e versionado (o proprio arquivo declara "no build step"),
+  # enquanto deixaria passar qualquer diretorio gerado com outro nome. O que o
+  # git nao rastreia nao e codigo que este repo distribui.
+  #
+  # Medido em 2026-07-27, o efeito no JS/TS e grande: 17 dos 54 contados (31%)
+  # eram apps/desktop/dist/, apps/desktop/release/linux-unpacked/ e ate
+  # venv/lib/python3.11/site-packages/urllib3/.../emscripten_fetch_worker.js —
+  # um virtualenv Python entrando como JS de producao. Os de dist/ e release/
+  # sao ainda copias byte a byte de achados que ja aparecem no fonte, entao
+  # inflavam o numero sem apontar um defeito novo sequer. No Python o efeito e
+  # zero, porque nao existe artefato de build equivalente; a regra vale para as
+  # duas linguagens porque a assimetria e do repo, nao do criterio.
+  #
+  # Isso tambem recorta .security/tools/**, o toolchain do proprio scanner. O
+  # `database create` (2.26.1) nao aceita --codescanning-config, e o
+  # LGTM_INDEX_FILTERS dos extractors nao resolve: a forma sem glob e aceita mas
+  # inerte (testado: 110 arquivos extraidos com e sem ela) e `exclude:path/**`
+  # aborta o create com "Illegal use of '**' in exclude path". Recortar na
+  # contagem e o unico ponto que funciona.
+  # A lista de rastreados vem primeiro e e checada separadamente de proposito.
+  # Se `git ls-files` falhar ou vier vazia (repo ausente, worktree quebrado), o
+  # `comm -23` classificaria TODO caminho como nao rastreado e a contagem cairia
+  # para zero — um "limpo" silencioso, que e o pior resultado possivel num
+  # scanner de seguranca. Nesse caso nao ha exclusao nenhuma: o numero volta a
+  # ser o de antes, que erra para mais e nunca esconde achado.
+  local tracked_list untracked_json
+  tracked_list="$(git -C "${PROJECT_ROOT}" ls-files 2>/dev/null | sort -u)"
+
+  if [[ -z "${tracked_list}" ]]; then
+    warn "codeql-${language}: nao foi possivel listar arquivos rastreados; contagem sem recorte de artefatos."
+    untracked_json='[]'
+  else
+    untracked_json="$(
+      comm -23 \
+        <(jq -r '[.runs[]?.results[]?.locations[0].physicalLocation.artifactLocation.uri // empty]
+                 | unique[]' "${report}" 2>/dev/null | sort -u) \
+        <(printf '%s\n' "${tracked_list}") \
+      | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null
+    )"
+    # Saida nao-array viraria filtro jq invalido; mesmo fallback conservador.
+    [[ "${untracked_json}" =~ ^\[.*\]$ ]] || untracked_json='[]'
+  fi
+
+  # shellcheck disable=SC2016 # $r/$rules/$res/$uri sao variaveis do jq, nao do shell
   classify_json_report "codeql-${language}" "${report}" "${rc_analyze}" \
-    '[ .runs[]? as $r
+    '['"${untracked_json}"' as $untracked
+       | .runs[]? as $r
        | ($r.tool.driver.rules // []) as $rules
        | $r.results[]?
        | . as $res
-       | select((($res.locations[0].physicalLocation.artifactLocation.uri // "")
-                 | test("(^|/)tests?/|(^|/)test_[^/]+\\.py$|_test\\.py$")) | not)
+       | (($res.locations[0].physicalLocation.artifactLocation.uri) // "") as $uri
+       | select(($uri | test("(^|/)tests?/|(^|/)test_[^/]+\\.py$|_test\\.py$")) | not)
+       | select(($untracked | index($uri)) == null)
        | ($rules[] | select(.id == $res.ruleId) | .properties["security-severity"] // empty)
      ] | length' \
-    "Suite security-and-quality para ${label}; codigo de producao, contagem restrita a regras com security-severity (${total} achados no SARIF, incluindo qualidade e testes)."
+    "Suite security-and-quality para ${label}; codigo-fonte rastreado pelo git, contagem restrita a regras com security-severity (${total} achados no SARIF, incluindo qualidade, testes e caminhos nao rastreados)."
 }
 
 scan_codeql() {
