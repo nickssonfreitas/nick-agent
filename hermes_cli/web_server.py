@@ -7587,6 +7587,26 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     url = base_url + "/models"
+
+    # Piso de SSRF. A URL e inteiramente controlada por quem chama, porque essa
+    # e a feature: apontar para um endpoint OpenAI-compativel qualquer. O gate
+    # de auth do dashboard ja cobre o acesso (bind nao-loopback sempre exige
+    # OAuth ou senha), mas um operador autenticado ainda podia usar este
+    # endpoint para fazer o servidor buscar 169.254.169.254.
+    #
+    # Usa is_always_blocked_url e NAO is_safe_url de proposito: LLM local e
+    # caso de uso de primeira classe aqui (Ollama em 127.0.0.1:11434, LM
+    # Studio), entao bloquear loopback e RFC1918 quebraria a feature. O piso
+    # so barra os enderecos de metadata de nuvem, que nunca sao alvo legitimo.
+    from tools.url_safety import is_always_blocked_url
+
+    if is_always_blocked_url(url):
+        return {
+            "ok": False, "reachable": False,
+            "message": "Blocked: cloud metadata endpoints are not valid providers.",
+            "models": [],
+        }
+
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
@@ -7628,6 +7648,15 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
+        # Mesmo piso de SSRF do /custom-endpoints/validate acima: so os
+        # enderecos de metadata de nuvem, para nao quebrar LLM local.
+        from tools.url_safety import is_always_blocked_url
+
+        if is_always_blocked_url(url):
+            return {
+                "ok": False, "reachable": False,
+                "message": "Blocked: cloud metadata endpoints are not valid providers.",
+            }
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
