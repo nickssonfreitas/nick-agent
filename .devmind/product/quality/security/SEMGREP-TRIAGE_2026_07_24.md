@@ -12,6 +12,7 @@
 | **False positives** | 511 |
 | **Remaining open** | see sections 7 and 8 |
 | **Updated** | 2026-07-25 — sections 7 and 8 extend this beyond semgrep to the rest of the audit (bandit, gitleaks, pip-audit, checkov, npm). Ruleset calibration from section 5 landed in `25b1fe1b5`. |
+| **Updated** | 2026-07-27 — section 9 triages the first CodeQL run (Python); section 10 triages its JS/TS sibling, records the five fixes that landed, two findings retracted after reading the code, and three items found while verifying that no scanner flagged. |
 
 Every one of the 516 semgrep findings was triaged by reading the flagged code,
 not by pattern-matching the rule name. Two are real defects and are written up
@@ -671,3 +672,132 @@ the reading of a small block. CodeQL 2.26.1 has no path-exclusion flag on
 `database create`, and a `codeql-config.yml` does not pay for itself at 5%, so
 the cut happens in the count alongside the existing `security-severity` filter
 (`6ffd4b462`). Python 1.276 → 1.208.
+
+---
+
+## 10. CodeQL JS/TS — triaged, 5 issues fixed
+
+Section 9 covers the Python side. The JS/TS sibling was triaged separately on
+2026-07-27: 135 raw results, **54 carrying a `security-severity`**, reduced to
+**38** once untracked build artifacts stopped being counted (see below). Eight
+findings are real, collapsing into **five distinct issues**. All five are fixed.
+
+| Issue | Commit | What was actually wrong |
+|-------|--------|-------------------------|
+| Path traversal in the gitnexus-explorer proxy | `a35bdfa69` | `path.join` used as if it were a containment check |
+| Deep-link input + log injection in the desktop | `935916e64` | Unvalidated OS-supplied URL; `\n` forging log lines (CWE-117) |
+| Notarization key written at the umask | `31f5e5b16` | Predictable name, permissive mode, minutes on disk |
+| Profile id accepted a trailing newline | `227c6be8f` | `$` matches before a final `\n` in Python; the id reaches `sh -lc` |
+| `tarfile` extraction without `filter=` below 3.11.4 | `2685d80e8` | PEP 706 backport boundary was not in `requires-python` |
+
+### The one that was not defence-in-depth: the proxy
+
+`optional-skills/research/gitnexus-explorer/scripts/proxy.mjs` built the served
+path with `path.join(DIST_DIR, urlPath)`. `path.join` normalizes `..` **after**
+joining, so it collapses the traversal into a real parent path rather than
+rejecting it — it is a string operation, not a boundary. A `GET` with `..`
+segments escaped `DIST_DIR` and served any file the process could read.
+`path.resolve` plus a prefix comparison is the actual control, with malformed
+percent-encoding and NUL rejected before that.
+
+The multiplier was in the documentation: section 4 of the skill's `SKILL.md`
+instructed the reader to *create* the proxy script, embedding a second copy of
+the same vulnerable code in prose. Fixing only the script would have left the
+doc minting new vulnerable copies, so the section now points at the shipped
+script. One place to fix, not two.
+
+### Two findings retracted after reading the code
+
+Recorded because the reasoning error is the reusable part.
+
+**OAuth token exfiltration via `base_url` substring — wrong.** The claim was
+that a `base_url` merely *containing* `anthropic.com` would leak the OAuth
+bearer. Both branches send the **same** `api_key` to the **same** `base_url`;
+the predicate selects the header format (`x-api-key` vs `Bearer`), not the
+destination. The prior triage's reading — provider dispatch, not an allowlist —
+was correct, and this is the same shape as the `py/incomplete-url-substring-sanitization`
+block in section 9. The error was stopping at "the token goes there" without
+asking "versus what otherwise".
+
+**Log injection in the gateway — wrong.** `route_name` only reaches a log after
+the 404 on unconfigured routes, so it is operator config, not attacker input;
+`event_type` is reached only *after* HMAC validation.
+
+### Scope inflation: the count was measuring the wrong repo
+
+16 of the 54 JS/TS findings were in files that are not repo sources. The cut is
+**"is it in `git ls-files`"**, not a glob on `/dist/`, because
+`plugins/kanban/dashboard/dist/index.js` is a hand-written IIFE that declares it
+has no build step and *is* tracked — a glob would have dropped it wrongly
+(`8eb0ba5cb`).
+
+The failure mode mattered more than the filter. If `git ls-files` returned
+empty, `comm -23` would classify **every** path as untracked and the count would
+fall to zero — a silent "clean", which is the worst possible output from a
+security scanner. The tracked list is now fetched and checked first; on failure
+it warns and excludes nothing, so the number reverts to the old one, which errs
+high and never hides a finding. Verified both paths: JS/TS 54 → 38, Python
+1.207 → 1.207 (correct no-op).
+
+### Found while verifying, not by any scanner
+
+Three items surfaced from reading the WhatsApp bridge surface while triaging a
+CodeQL finding about it. None were flagged by CodeQL, semgrep, or bandit.
+
+**`GET /messages` was a destructive route reachable from a browser**
+(`694639dfd`). The handler splices the queue, so the caller takes ownership and
+nobody else sees those messages. The `Host` allowlist defends DNS rebinding (an
+attacker *hostname* pointed at 127.0.0.1) but not a page on any origin doing
+`<img src="http://127.0.0.1:3000/messages">`, which sends `Host: 127.0.0.1:3000`
+and passes. CORS blocks *reading* the response, but the splice already ran:
+inbound messages gone before the gateway polls, silently and permanently. The
+write routes escaped this only because `express.json()` is the sole body parser,
+so they require a content type that forces a preflight. A required custom header
+gives the drain the same property.
+
+**Credential files at the `$HOME` level were deliverable** (`9708b8fe9`). The
+media-delivery denylist enumerated only sub-*directories*, so `~/.ssh/id_rsa`
+was blocked and `~/.netrc` was not, on nesting depth alone. Confirmed
+empirically with a temporary `$HOME`: `.netrc`, `.npmrc`, `.pypirc`,
+`.git-credentials` and `.bash_history` all passed in default mode. The five
+credential names are not a new judgement — they are exactly what
+`agent/file_safety.py` already refuses to *write*, and `base.py` states that
+invariant for its own `HERMES_HOME` block. The exfil side had drifted behind the
+write side. The regression test asserts the relation against
+`build_write_denied_paths` rather than a fixed list, so a credential added to
+the write guard now forces the delivery side to follow.
+
+**`_poll_messages` swallowed every non-200** (`plugins/platforms/whatsapp/adapter.py`,
+in `694639dfd`). No `else`, no log, no state change — the loop just kept
+polling. Inbound WhatsApp would stop working with zero output explaining it.
+`send()` has always surfaced bridge errors; the poll path never did. Pre-existing
+and independent of the header change, but shipped with it because the new guard
+introduces a 403 that would otherwise be invisible.
+
+### Still open
+
+**Bridge authentication.** `scripts/whatsapp-bridge/bridge.js` remains
+unauthenticated on loopback. The accurate description of that surface is not
+"arbitrary file read" but **unauthenticated full control of a WhatsApp
+account**: `/send` impersonates, `/edit` rewrites already-sent messages with
+`fromMe: true` (retroactive history falsification on both sides), `/messages`
+reads and destroys, `/chat/:id` enumerates group participants.
+
+A shared token attacks the *secondary* risk (a cross-UID attacker on a shared
+host) and does **not** close the dominant one, because a prompt-injected request
+originates inside the legitimate, token-bearing gateway. Two implementation
+traps if it is chosen: `_standalone_send` runs in a different process reading
+`config.yaml`, so the secret needs a persisted sidecar (precedent:
+`_write_bridge_pidfile`), and a per-spawn random token would silently break the
+bridge-reuse path, whose handshake compares only `scriptHash` — yielding a
+"healthy" bridge that rejects everything.
+
+**The bridge's own tests are orphaned.** `allowlist.test.mjs`,
+`owner_message_gate.test.mjs`, `outbound_ids.test.mjs` and
+`bridge.sendqueue.test.mjs` sit beside `bridge.js` and **nothing invokes them** —
+no workflow, no script, no `package.json` entry. Consequence for the item above:
+the server side of the drain guard has no automated coverage. `bridge.js` cannot
+be imported by a test (it connects to WhatsApp at module load) and `express` is
+not available to the vitest workspace, so the client side is what is covered
+today. Wiring these files into CI is the prerequisite for testing the server
+side properly.
