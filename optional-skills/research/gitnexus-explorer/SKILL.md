@@ -90,58 +90,30 @@ Add `--embeddings` for semantic search (slower — minutes instead of seconds).
 
 The index lives in `.gitnexus/` inside the repo (auto-gitignored).
 
-### 4. Create the Proxy Script
+### 4. Locate the Proxy Script
 
-Write this to a file (e.g., `$GITNEXUS_DIR/proxy.mjs`). It serves the production
-web UI and proxies `/api/*` to the GitNexus backend — same origin, no CORS issues,
-no sudo, no nginx.
+The proxy ships with this skill — do **not** hand-write a copy. It serves the
+production web UI and proxies `/api/*` to the GitNexus backend, same origin, no
+CORS issues, no sudo, no nginx.
 
-```javascript
-import http from 'node:http';
-import fs from 'node:fs';
-import path from 'node:path';
-
-const API_PORT = parseInt(process.env.API_PORT || '4747');
-const DIST_DIR = process.argv[2] || './dist';
-const PORT = parseInt(process.argv[3] || '8888');
-
-const MIME = {
-  '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
-  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff',
-  '.wasm': 'application/wasm',
-};
-
-function proxyToApi(req, res) {
-  const opts = {
-    hostname: '127.0.0.1', port: API_PORT,
-    path: req.url, method: req.method, headers: req.headers,
-  };
-  const proxy = http.request(opts, (upstream) => {
-    res.writeHead(upstream.statusCode, upstream.headers);
-    upstream.pipe(res, { end: true });
-  });
-  proxy.on('error', () => { res.writeHead(502); res.end('Backend unavailable'); });
-  req.pipe(proxy, { end: true });
-}
-
-function serveStatic(req, res) {
-  let filePath = path.join(DIST_DIR, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
-  if (!fs.existsSync(filePath)) filePath = path.join(DIST_DIR, 'index.html');
-  const ext = path.extname(filePath);
-  const mime = MIME[ext] || 'application/octet-stream';
-  try {
-    const data = fs.readFileSync(filePath);
-    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=3600' });
-    res.end(data);
-  } catch { res.writeHead(404); res.end('Not found'); }
-}
-
-http.createServer((req, res) => {
-  if (req.url.startsWith('/api')) proxyToApi(req, res);
-  else serveStatic(req, res);
-}).listen(PORT, () => console.log(`GitNexus proxy on http://localhost:${PORT}`));
+```bash
+PROXY="$(dirname "$(find ~/.hermes/skills -path '*/gitnexus-explorer/SKILL.md' 2>/dev/null | head -1)")/scripts/proxy.mjs"
+test -f "$PROXY" || echo "proxy.mjs not found — is the gitnexus-explorer skill installed?"
 ```
+
+The shipped script contains two protections that a quick hand-rolled static
+server does not have, and both are load-bearing:
+
+- It resolves every request path and rejects anything landing outside the dist
+  directory. `path.join(DIST_DIR, req.url)` is **not** a containment check — it
+  normalises `..` away after joining, so `GET /../../../../etc/passwd` reads
+  the file and serves it.
+- It binds `127.0.0.1` by default. `listen(PORT, cb)` with no host binds every
+  interface, which would publish both the UI and, through the `/api/*` proxy,
+  a backend that assumes it is loopback-only, to the whole network.
+
+Set `PROXY_HOST` only if you intend to expose it, and prefer the tunnel in
+step 6 for remote access.
 
 ### 5. Start the Services
 
@@ -149,8 +121,8 @@ http.createServer((req, res) => {
 # Terminal 1: GitNexus backend API
 npx gitnexus serve &
 
-# Terminal 2: Proxy (web UI + API on one port)
-node "$GITNEXUS_DIR/proxy.mjs" "$GITNEXUS_DIR/gitnexus-web/dist" 8888 &
+# Terminal 2: Proxy (web UI + API on one port), from step 4's $PROXY
+node "$PROXY" "$GITNEXUS_DIR/gitnexus-web/dist" 8888 &
 ```
 
 Verify: `curl -s http://localhost:8888/api/repos` should return the indexed repo(s).

@@ -51,13 +51,47 @@ function proxyToApi(req, res) {
   req.pipe(proxy, { end: true });
 }
 
+const ROOT = path.resolve(DIST_DIR);
+
+/**
+ * Resolve a request path to a file inside ROOT, or null if it escapes.
+ *
+ * `path.join(ROOT, urlPath)` is NOT a containment check: it normalises `..`
+ * segments away *after* joining, so `/../../etc/passwd` lands outside ROOT and
+ * gets served. Node's http server hands over the raw request target, so the
+ * traversal arrives untouched. Resolve first, then verify the result is still
+ * under ROOT — that comparison is what actually contains the request.
+ */
+function resolveWithinRoot(urlPath) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath);
+  } catch {
+    return null; // malformed percent-encoding
+  }
+  if (decoded.includes('\0')) return null;
+
+  // Leading '.' keeps an absolute request path from jumping out of ROOT;
+  // the prefix check below is what rejects `..` traversal.
+  const rel = decoded.startsWith('/') ? `.${decoded}` : `./${decoded}`;
+  const target = path.resolve(ROOT, rel);
+  if (target !== ROOT && !target.startsWith(ROOT + path.sep)) return null;
+  return target;
+}
+
 function serveStatic(req, res) {
   const urlPath = req.url.split('?')[0];
-  let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath);
+  let filePath = resolveWithinRoot(urlPath === '/' ? '/index.html' : urlPath);
+
+  if (filePath === null) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
 
   // SPA fallback: if file doesn't exist and isn't a static asset, serve index.html
   if (!fs.existsSync(filePath) && !path.extname(filePath)) {
-    filePath = path.join(DIST_DIR, 'index.html');
+    filePath = path.join(ROOT, 'index.html');
   }
 
   const ext = path.extname(filePath);
@@ -84,8 +118,14 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`GitNexus proxy listening on http://localhost:${PORT}`);
+// Loopback by default. `server.listen(PORT, cb)` with no host binds every
+// interface, which exposed this proxy — and, through proxyToApi, the backend
+// that assumes it is loopback-only — to the whole LAN, while the log below
+// still claimed "localhost". Set PROXY_HOST explicitly to widen it on purpose.
+const HOST = process.env.PROXY_HOST || '127.0.0.1';
+
+server.listen(PORT, HOST, () => {
+  console.log(`GitNexus proxy listening on http://${HOST}:${PORT}`);
   console.log(`  Web UI: http://localhost:${PORT}/`);
   console.log(`  API:    http://localhost:${PORT}/api/repos`);
   console.log(`  Backend: http://127.0.0.1:${API_PORT}`);
