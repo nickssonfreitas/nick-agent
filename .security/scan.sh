@@ -714,14 +714,25 @@ scan_codeql_language() {
   local total
   total="$(jq -r '[.runs[]?.results[]?] | length' "${report}" 2>/dev/null || echo 0)"
 
+  # Testes tambem ficam fora, pelo mesmo modelo de ameaca ja aplicado ao bandit
+  # e ao semgrep: codigo de teste nao e distribuido. O CodeQL nao tem flag de
+  # exclusao de path no `database create` (2.26.1), e montar um
+  # codeql-config.yml para isso nao se paga quando o efeito e 5% (68 dos 1.276
+  # em Python), entao o recorte acontece na contagem. Sem isso os tres
+  # scanners mediam escopos diferentes: 10 dos 15 py/overly-permissive-file
+  # eram fixtures que criam arquivo com modo ruim de proposito, justamente
+  # para testar que a deteccao funciona.
+  # shellcheck disable=SC2016 # $r/$rules/$res sao variaveis do jq, nao do shell
   classify_json_report "codeql-${language}" "${report}" "${rc_analyze}" \
     '[ .runs[]? as $r
        | ($r.tool.driver.rules // []) as $rules
        | $r.results[]?
        | . as $res
+       | select((($res.locations[0].physicalLocation.artifactLocation.uri // "")
+                 | test("(^|/)tests?/|(^|/)test_[^/]+\\.py$|_test\\.py$")) | not)
        | ($rules[] | select(.id == $res.ruleId) | .properties["security-severity"] // empty)
      ] | length' \
-    "Suite security-and-quality para ${label}; contagem restrita a regras com security-severity (${total} achados no SARIF, incluindo qualidade)."
+    "Suite security-and-quality para ${label}; codigo de producao, contagem restrita a regras com security-severity (${total} achados no SARIF, incluindo qualidade e testes)."
 }
 
 scan_codeql() {
