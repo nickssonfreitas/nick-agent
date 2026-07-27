@@ -605,11 +605,58 @@ outside `1-64` chars of lowercase alphanumerics, hyphens and underscores.
 attacks it blocks (`~; rm -rf /`, `~user/$(malicious)`); the script-building
 paths quote through `_escape_shell_arg`.
 
-### Not individually reviewed
+### The tail, reviewed 2026-07-27
 
-Roughly 145 findings across `py/incomplete-url-substring-sanitization` (73),
-`py/clear-text-storage-sensitive-data` (23), `py/stack-trace-exposure` (17),
-`py/overly-permissive-file` (15) and a long tail. They are recorded here as
-**unreviewed**, not as accepted. `py/overly-permissive-file` is the one I would
-open next: file-mode bugs are cheap to confirm and the repo already writes
-`chmod 600` in places, so a divergence would be a real finding.
+The remaining ~145 were worked through. Two produced fixes, both the same shape:
+a file mode left to the umask on a path that the rest of the codebase writes
+`0o600`. Neither was a live exposure — `~/.hermes` and `~/.hermes/logs` are
+`0o700` — but both diverged from the file's own convention, and a directory-mode
+regression later would carry the file with it.
+
+**`py/overly-permissive-file` (15) — 1 fixed.** The gateway diagnostic dump
+opened with `0o644` (`6ffd4b462`). Contents are `ps auxf`, `pstree`, `dmesg` and
+`journalctl`; `ps auxf` carries the full command line of every process, where a
+credential passed as an argument shows up. Of the other 14, ten are in `tests/`
+and several are fixtures that create bad-mode files *deliberately* to prove the
+detection works (`test_auth_toctou_file_modes`, `test_file_write_safety`); the
+`0o660` in `hermes_logging` only applies in `managed` mode, where the service
+group must write.
+
+**`py/clear-text-storage-sensitive-data` (23) — 2 fixed.** `hindsight` and
+`mem0` write API keys to `~/.hermes/.env` with `Path.write_text` (`abb31bc3a`).
+That preserves the mode of an existing file but **creates** with
+`0o666 & ~umask`; verified empirically that under umask 002 the file is born
+`0o664`. Both plugins already use `atomic_json_write(..., mode=0o600)` for their
+config and left the more sensitive `.env` to the umask. The rest of the block is
+`agent/trajectory.py` writing conversation JSONL, which is the product, not a
+leak.
+
+**`py/incomplete-url-substring-sanitization` (73) — all FP.** Only 20 are outside
+`tests/`, and every one is provider dispatch, not an allowlist: `"azure.com" in
+normalized` picks the Azure request shape, `"api.openai.com" in url_lower` picks
+the OpenAI dialect, and so on. The user configures their own `base_url`; the
+"bypass" is making your own agent speak the wrong API dialect. The one that
+looked like a trust boundary, `tools/skills_hub.py:3144` checking
+`"raw.githubusercontent.com" in source_url`, is disarmed by its own context: the
+primary path immediately above returns whatever `skillMdUrl` the catalog sends,
+gated only on `startswith("http")`. Tightening the substring buys nothing while
+that path exists. The real property worth naming is that skill installation
+trusts the remote catalog to supply fetch URLs — inherent to the feature, same
+trust as npm or pip, not a bug in this check.
+
+**`py/stack-trace-exposure` (17) — no exposure.** None of the flagged returns
+carry a traceback; they return domain dicts and route errors through
+`HTTPException` with a static message. Searched for the real pattern instead of
+following the taint: there is **no `traceback.format_exc()` anywhere in
+`web_server.py`**. What does reach clients is 55 `detail=f"...{exc}"` strings,
+almost all `OSError` text naming a path — returned to an authenticated operator
+who is browsing their own filesystem through the dashboard's file manager.
+
+**Scope inconsistency found and closed.** CodeQL was scanning `tests/` while
+bandit and semgrep were not, so the three tools measured different repos. It is
+5% of the Python security findings overall (68 of 1.276) but was 10 of the 15 in
+`py/overly-permissive-file` and 53 of the 73 in the URL block — enough to invert
+the reading of a small block. CodeQL 2.26.1 has no path-exclusion flag on
+`database create`, and a `codeql-config.yml` does not pay for itself at 5%, so
+the cut happens in the count alongside the existing `security-severity` filter
+(`6ffd4b462`). Python 1.276 → 1.208.
