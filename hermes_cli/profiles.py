@@ -34,7 +34,15 @@ from typing import List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# `\Z`, nao `$`: em Python o `$` tambem casa imediatamente antes de um \n final,
+# entao `"coder\n"` passaria por um padrao ancorado com `$`. O nome de profile
+# vira caminho em disco e, via `_profile_setup_command`, string de comando em
+# `sh -lc` (web_server.py, endpoint open-terminal), onde um \n separa comandos.
+# Nenhuma exploracao e conhecida — a criacao valida com o mesmo regex e o
+# endpoint ainda exige `profile_exists()` — mas o custo de fechar a brecha e um
+# caractere e o custo de deixa-la aberta depende de nenhum caller futuro pular
+# uma dessas duas barreiras.
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
