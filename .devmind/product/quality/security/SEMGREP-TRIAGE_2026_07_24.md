@@ -514,3 +514,102 @@ GHSA-qwww-vcr4-c8h2 affects RSC mode only. Both consumers (`web`,
 `react-router.config.*`, no `@react-router/*` framework package, and no RSC API
 anywhere in the source. Accepted with justification; the proposed downgrade to
 7.11.0 would be a regression for no gain.
+
+---
+
+## 9. CodeQL — first run, triaged
+
+Source: `.security/reports/20260727T095228Z/codeql-python.sarif` (55 MB) and the
+JS/TS sibling. First CodeQL run on this repo, 2026-07-27.
+
+Raw: 8.200 Python results. Only **1.276 carry a `security-severity`**; the other
+6.621 are `recommendation`-level maintainability (`py/empty-except` 2.297,
+`py/cyclic-import` 1.610, `py/import-and-import-from` 1.081, unused locals and
+imports). The scan now counts the security subset only — see `67adc972d`.
+JS/TS: 135 raw, 54 security. This section triages the 1.276.
+
+**Nothing here required a code change.** One item is worth hardening as
+defence-in-depth; everything else is either an explicit opt-in or a structural
+false positive from taint-by-association.
+
+| Rule | n | CVSS | Verdict |
+|------|--:|-----:|---------|
+| `py/clear-text-logging-sensitive-data` | 650 | 7.5 | FP — taint-by-association |
+| `py/path-injection` | 271 | 7.5 | FP — operator-supplied paths, normalizers present |
+| `py/log-injection` | 160 | 6.1 | FP — same family as the logging block |
+| `py/incomplete-url-substring-sanitization` | 73 | 7.8 | not individually reviewed |
+| `py/shell-command-constructed-from-input` | 30 | 6.3 | FP — allowlist + shell quoting |
+| `py/clear-text-storage-sensitive-data` | 23 | 7.5 | not individually reviewed |
+| `py/stack-trace-exposure` | 17 | 5.4 | not individually reviewed |
+| `py/overly-permissive-file` | 15 | 7.8 | not individually reviewed |
+| `py/weak-sensitive-data-hashing` | 10 | 7.5 | overlaps the B324 set, already annotated |
+| `py/insecure-protocol` | 3 | 7.5 | accepted — recon skill |
+| `py/request-without-cert-validation` | 3 | 7.5 | accepted — explicit opt-in |
+| `py/partial-ssrf` | 3 | 9.1 | FP — encoded path / redirects disabled |
+| `py/full-ssrf` | 2 | 9.1 | **real vector, gated by auth** |
+| others | ~16 | — | not individually reviewed |
+
+### The one worth acting on: `py/full-ssrf` (2)
+
+`hermes_cli/web_server.py:7596` and `:7638`. Both take a user-supplied
+`base_url` for a custom OpenAI-compatible provider and fetch `base_url +
+"/models"` to enumerate models. The URL is fully attacker-controlled by design —
+that *is* the feature.
+
+Why it is not the 9.1 CodeQL assigns:
+
+- It sits behind the dashboard auth boundary. `should_require_auth` returns
+  False only for a loopback bind (trusted local operator, who can already run
+  arbitrary code); every non-loopback bind **always** requires OAuth or the
+  password provider, and `--insecure` no longer disables that.
+- `httpx` does not follow redirects by default and neither call site enables
+  them, so the "allowed host bounces inward" variant is closed.
+
+Why it is still worth hardening: an authenticated dashboard user, or a hijacked
+session, can make the server probe internal addresses, including
+`169.254.169.254`. The project's own `api-security` rule (OWASP API7) calls for
+blocking link-local and private ranges.
+
+The catch, and the reason this is not a one-line fix: local LLM endpoints are a
+first-class use case here (Ollama on `127.0.0.1:11434`, LM Studio), so a blanket
+loopback/RFC1918 block would break the feature. A targeted deny of the cloud
+metadata addresses (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`)
+buys most of the protection at no functional cost. **Left open deliberately** —
+it is a design decision about the provider-validation UX, not a patch.
+
+### `py/clear-text-logging-sensitive-data` (650) — taint-by-association
+
+CodeQL treats any user message or tool output reaching a logger as "sensitive
+data in clear text". For an agent framework whose whole job is processing user
+messages and tool results, that taints most of the logging surface. Same
+structural mismatch already recorded for semgrep's
+`python-logger-credential-disclosure` in section 4.
+
+Checked the hottest subset rather than trusting the shape: 60 of the 650 sit in
+files that actually handle credentials, and the code there is *exemplary*.
+`plugins/dashboard_auth/self_hosted/__init__.py:853` logs `bool(client_secret)`
+under the comment "Log only whether a secret is present, never the secret
+itself" and is flagged anyway. `plugins/dashboard_auth/nous/__init__.py` logs
+`client_id`, a public OAuth identifier. `agent/turn_context.py:477` logs an
+80-char preview produced by `summarize_user_message_for_log`.
+
+### `py/path-injection` (271) and `py/shell-command-constructed-from-input` (30)
+
+Both are the operator-supplied-input threat model already settled for `B602
+shell=True` in section 7: a CLI where the user provides paths to their own
+files. Guards are present where they matter. `hermes_cli/kanban_db.py` runs
+every board slug through `_normalize_board_slug`, which raises on anything
+outside `1-64` chars of lowercase alphanumerics, hyphens and underscores.
+`tools/file_operations.py:953` expands `~username` only after
+`re.fullmatch(r'[a-zA-Z0-9._-]+', username)`, with a comment naming the exact
+attacks it blocks (`~; rm -rf /`, `~user/$(malicious)`); the script-building
+paths quote through `_escape_shell_arg`.
+
+### Not individually reviewed
+
+Roughly 145 findings across `py/incomplete-url-substring-sanitization` (73),
+`py/clear-text-storage-sensitive-data` (23), `py/stack-trace-exposure` (17),
+`py/overly-permissive-file` (15) and a long tail. They are recorded here as
+**unreviewed**, not as accepted. `py/overly-permissive-file` is the one I would
+open next: file-mode bugs are cheap to confirm and the repo already writes
+`chmod 600` in places, so a divergence would be a real finding.
