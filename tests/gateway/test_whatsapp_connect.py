@@ -330,6 +330,84 @@ class TestBridgeRuntimeFailure:
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
 
+    @staticmethod
+    def _poll_once(adapter, resp):
+        """Wire ``resp`` as the single /messages response and stop the loop.
+
+        ``_poll_messages`` runs ``while self._running``; flipping the flag as
+        the request is issued lets the iteration finish normally and then
+        exit, which is what exercises the branch under test.
+        """
+        def _stop_after_one(*args, **kwargs):
+            adapter._running = False
+            return _AsyncCM(resp)
+
+        session = MagicMock()
+        session.get = MagicMock(side_effect=_stop_after_one)
+        adapter._http_session = session
+        return session
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_reports_non_200_from_bridge(self, capsys):
+        """A non-200 used to match no branch at all — no log, no state
+        change, and the loop just kept going. Inbound WhatsApp would stop
+        working with *zero* output to explain it, which is the worst way
+        for a bridge to fail. ``send()`` has always surfaced bridge errors
+        (it returns SendResult with the error); the poll path never did.
+        """
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._shutting_down = False
+
+        resp = MagicMock()
+        resp.status = 503
+        resp.text = AsyncMock(return_value="Not connected to WhatsApp")
+        resp.json = AsyncMock(return_value=[])
+        self._poll_once(adapter, resp)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._poll_messages()
+
+        output = capsys.readouterr().out
+        assert "503" in output, f"non-200 status must reach the operator: {output!r}"
+        # The body is the actionable half — "503" alone doesn't say whether
+        # the bridge lost WhatsApp or rejected the request.
+        assert "Not connected to WhatsApp" in output
+        # A failed poll has no messages to decode; parsing anyway would
+        # raise inside the try and be reported as a generic "Poll error".
+        resp.json.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_poll_messages_sends_preflight_forcing_header(self):
+        """The bridge refuses a /messages drain that arrives without this
+        header. It is not a secret and authenticates nobody — its only job
+        is to make the request non-simple, so a browser must preflight it
+        and a page doing ``<img src="http://127.0.0.1:3000/messages">``
+        can't empty the inbound queue. The drain is destructive (it splices
+        the queue), so a successful cross-origin hit loses messages for
+        good. If this client ever stops sending the header, polling 403s
+        and inbound WhatsApp dies — hence a test on the request itself.
+        """
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._shutting_down = False
+
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value=[])
+        session = self._poll_once(adapter, resp)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._poll_messages()
+
+        headers = session.get.call_args.kwargs.get("headers") or {}
+        sent = {k.lower(): v for k, v in headers.items()}
+        assert sent.get("x-hermes-bridge"), (
+            f"poll must send the preflight-forcing header; sent {headers!r}"
+        )
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("returncode", [0, -2, -15])
     async def test_shutdown_suppresses_fatal_on_planned_bridge_exit(self, returncode):

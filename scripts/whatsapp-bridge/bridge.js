@@ -6,7 +6,10 @@
  * and exposes HTTP endpoints for the Python gateway adapter.
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
- *   GET  /messages       - Long-poll for new incoming messages
+ *   GET  /messages       - Long-poll for new incoming messages. Destructive
+ *                          (drains the queue) and therefore requires the
+ *                          X-Hermes-Bridge header, which forces a browser to
+ *                          preflight instead of hitting it as a simple GET.
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
@@ -801,8 +804,32 @@ app.use((req, res, next) => {
   next();
 });
 
-// Poll for new messages (long-poll style)
+// Poll for new messages (long-poll style).
+//
+// This drain is DESTRUCTIVE: the splice empties the queue, so whoever calls it
+// takes ownership of those messages and nobody else ever sees them. That makes
+// it reachable-and-harmful from a browser in a way the write routes are not.
+// The Host check above stops DNS rebinding (an attacker *hostname* pointed at
+// 127.0.0.1) but not a page on any origin doing
+// `<img src="http://127.0.0.1:3000/messages">` — that sends `Host: 127.0.0.1:3000`,
+// which is on the allowlist. CORS then blocks the attacker from *reading* the
+// response, but the splice has already run: inbound WhatsApp messages are gone
+// before the gateway ever polls, silently and permanently.
+//
+// The write routes escape this only because `express.json()` is the sole body
+// parser, so they need `Content-Type: application/json`, which is not a CORS
+// simple type and therefore forces a preflight. This header requirement gives
+// the drain the same property: a custom request header triggers a preflight
+// OPTIONS, the bridge answers it without CORS headers, and the browser never
+// issues the real GET. A non-browser client on this host is unaffected.
+const POLL_HEADER = 'x-hermes-bridge';
+
 app.get('/messages', (req, res) => {
+  if (!req.headers[POLL_HEADER]) {
+    return res.status(403).json({
+      error: `Missing ${POLL_HEADER} header. The message drain is destructive and rejects simple cross-origin requests.`,
+    });
+  }
   const msgs = messageQueue.splice(0, messageQueue.length);
   res.json(msgs);
 });

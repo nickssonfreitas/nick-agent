@@ -1244,6 +1244,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
+                    # The bridge requires this header on the drain. It is not a
+                    # secret and authenticates nothing — its only job is to make
+                    # the request non-simple so a browser has to preflight it,
+                    # which keeps a random web page from emptying the inbound
+                    # queue via `<img src=...>`. See the /messages route in
+                    # scripts/whatsapp-bridge/bridge.js.
+                    headers={"X-Hermes-Bridge": "poll"},
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status == 200:
@@ -1255,6 +1262,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     self._enqueue_text_event(event)
                                 else:
                                     await self.handle_message(event)
+                    else:
+                        # Without this branch a non-200 was swallowed whole: no
+                        # log, no state change, and the loop just kept polling.
+                        # Inbound WhatsApp would stop working with *zero* output
+                        # to explain it — the worst way for a bridge to fail.
+                        # send() has always handled this (it returns SendResult
+                        # with the error); the poll path never did.
+                        body = (await resp.text())[:200]
+                        print(
+                            f"[{self.name}] Poll failed: bridge returned "
+                            f"HTTP {resp.status}: {body}"
+                        )
+                        await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
             except Exception as e:
