@@ -697,7 +697,18 @@ scan_codeql() {
     return
   fi
   if ! command_exists codeql; then
-    record_result codeql skipped 0 0 "" "CodeQL não foi instalado nesta arquitetura/configuração."
+    # A nota anterior dizia "nesta arquitetura/configuração", e isso se lia como
+    # limitação de plataforma. Não é: em 2026-07-24 o instalador registrou
+    # "CodeQL desativado por configuração", ou seja, rodou com INSTALL_CODEQL=0.
+    # O padrão é 1 em amd64 e esta máquina é x86_64, que o install.sh mapeia
+    # para amd64 — a arquitetura sempre suportou. Distinguir os dois casos
+    # importa porque um é impedimento e o outro é uma decisão reversível, e a
+    # nota antiga fazia a lacuna de SAST parecer inevitável.
+    local motivo="CodeQL não instalado."
+    if [[ "${OS_ARCH_SUPPORTS_CODEQL:-1}" == "1" ]]; then
+      motivo+=" A arquitetura é suportada; reinstale com INSTALL_CODEQL=1 ./.security/install.sh."
+    fi
+    record_result codeql skipped 0 0 "" "${motivo} Lacuna de SAST profundo, não coberta por semgrep/bandit."
     return
   fi
 
