@@ -17,7 +17,17 @@ readme = "README.md"
 # wheel yet and fall back to a maturin source build that fails. Capping at
 # <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
 # build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+#
+# O piso e 3.11.4, nao 3.11, por seguranca e nao por API. `agent/curator_backup.py`
+# extrai o snapshot de skills com `tarfile.extractall(..., filter="data")` e cai
+# num `extractall` sem filtro no `except TypeError` para interpretadores antigos.
+# O `filter=` do PEP 706 chegou no 3.12 mas foi retroportado para o 3.11.4, entao
+# a janela real sem filtro e so 3.11.0-3.11.3. Nessa faixa a checagem manual que
+# roda antes (rejeita path absoluto e `..`) nao cobre membros symlink, que e o
+# vetor que o `filter="data"` fecha. Subir o piso elimina a faixa em vez de
+# duplicar a logica do filtro. O CI ja usa `uv python install 3.11`, que resolve
+# para o 3.11.x mais recente, entao nada muda na pratica.
+requires-python = ">=3.11.4,<3.14"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
