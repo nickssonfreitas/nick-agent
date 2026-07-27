@@ -1091,6 +1091,88 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
+    def test_delivery_denies_every_bare_home_file_the_write_guard_denies(
+        self, tmp_path, monkeypatch
+    ):
+        """Cross-module invariant: a credential the agent may not *write*
+        must also never be *delivered*.
+
+        base.py states this rule for its HERMES_HOME block, but the $HOME
+        block only enumerated sub-*directories*, so files sitting directly
+        in $HOME fell through: ~/.ssh/id_rsa was blocked and ~/.netrc was
+        not, purely because of nesting depth. Asserted as a relation
+        against agent/file_safety.py rather than as a hardcoded list, so
+        adding a credential to the write guard forces the delivery side to
+        follow instead of silently drifting behind it.
+
+        Scoped to files whose parent IS $HOME: sub-directory paths are
+        already covered by the subpath tuple, and the ~/.hermes entries
+        resolve against the module-level HERMES_HOME, not this fake one.
+        """
+        from pathlib import Path
+
+        from agent.file_safety import build_write_denied_paths
+
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        real_home = Path(os.path.realpath(str(fake_home)))
+
+        bare_home_files = [
+            Path(p)
+            for p in build_write_denied_paths(str(fake_home))
+            if Path(p).parent == real_home
+        ]
+        assert bare_home_files, (
+            "write guard should deny at least one file directly in $HOME; "
+            "if this is empty the invariant below is vacuous"
+        )
+
+        for target in bare_home_files:
+            target.write_text("secret", encoding="utf-8")
+            assert BasePlatformAdapter.validate_media_delivery_path(str(target)) is None, (
+                f"{target.name} is refused for writes but would be delivered"
+            )
+
+    def test_delivery_denies_shell_history_in_home(self, tmp_path, monkeypatch):
+        """Shell/REPL history is credential material for delivery even
+        though the write guard ignores it — writing history is harmless,
+        reading it is not. Secrets land there via commands typed inline
+        (``export TOKEN=...``), so it is denied on its own rationale
+        rather than by the write-guard invariant above.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        history = fake_home / ".bash_history"
+        history.write_text("export API_KEY=sk-live-abc123\n", encoding="utf-8")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(history)) is None
+
+    def test_home_denylist_does_not_block_ordinary_files(self, tmp_path, monkeypatch):
+        """The bare-file denylist must stay surgical. A user's own document
+        sitting directly in $HOME is the single most ordinary delivery case
+        there is ("send me ~/relatorio.pdf") and denying the whole home
+        directory to fix the credential gap would break it.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        for name in ("relatorio.pdf", "notes.md", ".hidden-but-harmless.txt"):
+            doc = fake_home / name
+            doc.write_bytes(b"content")
+            assert BasePlatformAdapter.validate_media_delivery_path(str(doc)) == str(
+                doc.resolve()
+            )
+
     def test_denylist_blocks_system_prefixes(self, tmp_path, monkeypatch):
         """Files under /etc, /proc, /sys, /root, /boot, /var/{log,lib,run}
         are denied. We construct the test by patching the denylist root

@@ -1043,6 +1043,35 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     "Library/Keychains",  # macOS
 )
 
+# Credential files that sit *directly* in $HOME rather than in a subdirectory.
+#
+# The subpath tuple above only denies directories, so before this list a MEDIA
+# path of ``~/.git-credentials`` or ``~/.netrc`` matched nothing and was
+# delivered in default (non-strict) mode — while ``~/.ssh/id_rsa`` was blocked,
+# purely because the SSH key happens to live one level down. The exfil side was
+# trailing the write side for exactly the files agent/file_safety.py already
+# refuses to write (build_write_denied_paths), which is the invariant the
+# HERMES_HOME block below states for itself. Same rule, same list.
+_MEDIA_DELIVERY_DENIED_HOME_FILES = (
+    ".netrc",
+    ".pgpass",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    # Not in the write guard, and deliberately so: writing a history file is
+    # harmless, reading one is not. Shell and REPL history routinely contains
+    # secrets typed inline (`export TOKEN=...`, `curl -H "Authorization: ..."`,
+    # a psql URI with the password in it), so it is credential material for
+    # delivery purposes even though it is not for write purposes.
+    ".bash_history",
+    ".zsh_history",
+    ".sh_history",
+    ".python_history",
+    ".psql_history",
+    ".mysql_history",
+    ".node_repl_history",
+)
+
 
 # Canonical cache subdirectories that hold deliverable artifacts. Used both
 # for the top-level safe roots above and to enumerate per-profile cache roots
@@ -1159,6 +1188,8 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
+    for name in _MEDIA_DELIVERY_DENIED_HOME_FILES:
+        denied.append(home / name)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above (matched BEFORE this denylist in
