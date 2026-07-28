@@ -10,6 +10,11 @@ act/
 .venv
 .vscode/
 .env
+# Deploy credentials read by scripts/setup-deploy-secrets.sh. The bare `.env`
+# rule above does NOT cover this name, and this file holds an SSH private key
+# that reaches root on the VPS — an uncovered name is one `git add .` away from
+# being published.
+.env.deploy
 .op.env
 .env.local
 .env.development.local
