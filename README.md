@@ -133,6 +133,12 @@ scripts/run_tests.sh tests/gateway/  # one directory
 **Never call `pytest` directly.** `scripts/run_tests.sh` runs each test file in
 its own subprocess and enforces the hermetic environment CI uses.
 
+On Windows, use the PowerShell installer instead of the shell path above:
+
+```powershell
+scripts/install.ps1
+```
+
 JS/TS — install at the repo root, workspaces assume it:
 
 ```bash
