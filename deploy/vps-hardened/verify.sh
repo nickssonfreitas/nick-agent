@@ -2,7 +2,7 @@
 #
 # Post-deploy verification gate for the hardened VPS bundle.
 #
-# This is the executable form of the "Verification checklist" in DEPLOY.md, so
+# This is the executable form of the "Verification checklist" in wiki/operations/vps-deployment.md, so
 # the checklist has exactly one source of truth: change a check here, not in
 # two places. Run it by hand before connecting personal data, and let CI run it
 # as the gate that decides whether a deploy stands or gets rolled back
@@ -32,7 +32,7 @@
 #
 #   Checks 3, 7 and 8 are soft because each has a legitimate "not yet" state:
 #   the dashboard CSP is deliberately Report-Only until a clean cycle
-#   (DEPLOY.md step 7 / HERMES_CSP_ENFORCE), and 7 and 8 depend on a
+#   (wiki/operations/vps-deployment.md step 7 / HERMES_CSP_ENFORCE), and 7 and 8 depend on a
 #   config-snippet.yaml merge whose mcp_servers block you are told to hand-edit
 #   for your actual servers. Failing a deploy on those would train you to pass
 #   --force, which is how the hard checks stop getting read.
@@ -110,7 +110,7 @@ check_local() {
     return
   fi
   if ! cd "$deploy_dir" 2>/dev/null; then
-    fail "deploy dir not found: ${deploy_dir} (set HERMES_DEPLOY_DIR, or see BOOTSTRAP.md step 1)"
+    fail "deploy dir not found: ${deploy_dir} (set HERMES_DEPLOY_DIR, or see wiki/operations/vps-bootstrap.md step 1)"
     return
   fi
 
@@ -152,7 +152,7 @@ check_local() {
   perms="$(docker exec hermes stat -c '%a %U' /opt/data/.env 2>/dev/null || true)"
   case "$perms" in
     "600 hermes") pass "6. /opt/data/.env is 600 hermes" ;;
-    "")           fail "6. /opt/data/.env missing — run 'hermes login' (BOOTSTRAP.md step 5)" ;;
+    "")           fail "6. /opt/data/.env missing — run 'hermes login' (wiki/operations/vps-bootstrap.md step 5)" ;;
     *)            fail "6. /opt/data/.env has wrong ownership/permissions: ${perms}" ;;
   esac
 
@@ -160,7 +160,7 @@ check_local() {
   if docker exec hermes sh -lc 'grep -q "^sessions:" /opt/data/config.yaml' 2>/dev/null; then
     pass "7. retention block present in config.yaml"
   else
-    warn "7. no 'sessions:' retention block — merge config-snippet.yaml (BOOTSTRAP.md step 6)"
+    warn "7. no 'sessions:' retention block — merge config-snippet.yaml (wiki/operations/vps-bootstrap.md step 6)"
   fi
 
   # 8. An MCP server with sampling enabled can drive the model on its own.

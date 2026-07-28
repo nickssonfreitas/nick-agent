@@ -60,7 +60,7 @@ Skip the map and jump straight to the page that owns your task.
 * [Add a capability of any kind](concepts/architecture.md#the-footprint-ladder-read-before-adding-anything) - Start at the Footprint Ladder; the highest rung that works wins.
 * [Add a model tool](core/tools.md#adding-a-core-tool) - Two files: the tool module and the toolset wiring.
 * [Add a slash command](surfaces/cli.md#slash-command-registry) - The CLI registry, not a new core tool.
-* [Add a messaging platform](surfaces/gateway.md#adding-a-platform) - One `BasePlatformAdapter` subclass.
+* [Add a messaging platform](surfaces/adding-a-platform.md) - One `BasePlatformAdapter` subclass; the page covers the plugin route and the core route.
 * [Add an inference provider](extensions/providers-and-models.md#adding-a-provider) - Prefer a model-provider plugin over a core adapter.
 * [Add a config setting](state/config-and-profiles.md#adding-a-setting) - `config.yaml`, never a new `HERMES_*` env var.
 * [Add or fix a skill](extensions/skills-and-curator.md) - Authoring standards are HARDLINE and live in AGENTS.md.

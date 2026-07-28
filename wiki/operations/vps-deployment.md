@@ -44,6 +44,7 @@ directory.
 | `verify.sh` | The verification checklist below, as an executable gate |
 | `remote-deploy.sh` | Digest swap + pre-deploy DB backup + health wait, runs on the VPS |
 | `hostinger-api.sh` | Hostinger VPS REST API wrapper, for disaster recovery only |
+| `.env.deploy.example` | Template for the GitHub `production` secrets; fed to `scripts/setup-deploy-secrets.sh` |
 
 Doing this once by hand? Follow this page top to bottom. Wiring it to CI
 afterwards? Read [VPS bootstrap](vps-bootstrap.md) — it splits the procedure into the half that

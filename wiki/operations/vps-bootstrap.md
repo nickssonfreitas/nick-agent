@@ -228,6 +228,23 @@ Repository secrets:
 | `VPS_SSH_KNOWN_HOSTS` | `ssh-keyscan` output — pinned, never `StrictHostKeyChecking=no` |
 | `HERMES_DOMAIN` | the domain in the Caddyfile |
 
+Do not paste those values into the GitHub UI by hand. The repo ships
+`scripts/setup-deploy-secrets.sh`, which reads a local `.env.deploy` and writes
+straight into the `production` environment, so the credentials go from your disk
+to GitHub and nowhere else — not into a commit, not onto a command line where
+`ps` could read them, not through a chat transcript:
+
+```bash
+cp deploy/vps-hardened/.env.deploy.example .env.deploy
+$EDITOR .env.deploy && chmod 600 .env.deploy
+scripts/setup-deploy-secrets.sh --check   # validate and report, writing nothing
+scripts/setup-deploy-secrets.sh           # write them
+```
+
+`.env.deploy.example` deliberately carries neither the provider API keys (those go
+inside the container, step 5) nor `HOSTINGER_API_TOKEN`, which is an account-wide
+credential and does not belong in CI.
+
 Gate the `production` environment with required reviewers, then dry-run before
 trusting it:
 

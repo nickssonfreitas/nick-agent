@@ -6,7 +6,7 @@ name: Publish Image (GHCR)
 # gated to the upstream repository, so a fork publishes nothing. But this
 # fork's code differs from upstream in ways the hardened VPS deploy depends on
 # — the CSP work in hermes_cli/web_server.py and the credential-mode clamp in
-# hermes_cli/config.py, among others. DEPLOY.md's posture assumes those
+# hermes_cli/config.py, among others. the deployment page's posture assumes those
 # code-layer fixes are present; deploying the upstream image would give you the
 # hardened configuration wrapped around unhardened code, and verify.sh check 6
 # would fail on it.
@@ -194,5 +194,5 @@ jobs:
             echo ""
             echo "First publish only: check the package is public at"
             echo "<https://github.com/${GITHUB_REPOSITORY}/pkgs/container/${GITHUB_REPOSITORY#*/}>,"
-            echo "or give the VPS a read-only PAT (see BOOTSTRAP.md step 0b)."
+            echo "or give the VPS a read-only PAT (see wiki/operations/vps-bootstrap.md step 0b)."
           } >> "$GITHUB_STEP_SUMMARY"

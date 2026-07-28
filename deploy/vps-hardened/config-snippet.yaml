@@ -1,5 +1,5 @@
 # Merge these keys into the container's ~/.hermes/config.yaml (i.e. the
-# hermes-data volume at /opt/data/config.yaml). Apply with DEPLOY.md step 6.
+# hermes-data volume at /opt/data/config.yaml). Apply with wiki/operations/vps-deployment.md step 6.
 # These are NOT read from this file directly — it is a reference to copy from.
 
 # Retention is ON by default (sessions.auto_prune defaults to true): ended

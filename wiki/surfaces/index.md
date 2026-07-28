@@ -9,4 +9,5 @@ surface.
 * [TUI](tui.md) - The Ink terminal UI and its Python JSON-RPC backend.
 * [Desktop](desktop.md) - The Electron chat app and the transport it shares with the other surfaces.
 * [Dashboard and web](dashboard-web.md) - The browser dashboard and the PTY bridge that embeds the real TUI inside it.
+* [Adding a messaging platform](adding-a-platform.md) - Both routes end to end: the plugin path that touches no core code, and the eleven core files the built-in path still has to change.
 * [Billing lifecycle in the client](billing-lifecycle.md) - Every billing state shape mapped to what the TUI renders, plus each typed refusal code and its recovery action.

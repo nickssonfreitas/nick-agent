@@ -58,7 +58,7 @@ system already handles adapter creation, config parsing, user authorization, cro
 delivery, `send_message` routing, system-prompt hints, status display and gateway
 setup.
 
-Full authoring guide: [`gateway/platforms/ADDING_A_PLATFORM.md`](../../gateway/platforms/ADDING_A_PLATFORM.md).
+Full authoring guide: [Adding a messaging platform](adding-a-platform.md).
 
 ## Adding a platform
 
@@ -163,7 +163,7 @@ conversation's role alternation stays intact. See [Scheduling](../extensions/sch
 
 | Task | Start at |
 |---|---|
-| Add a platform | `plugins/platforms/<name>/` + `ADDING_A_PLATFORM.md` |
+| Add a platform | `plugins/platforms/<name>/` + [Adding a messaging platform](adding-a-platform.md) |
 | Add a gateway-only slash command | `hermes_cli/commands.py` (`gateway_only=True`) + `gateway/run.py` |
 | Make a command reach a busy agent | both guards, dispatched inline |
 | Change streaming cadence | `gateway/stream_consumer.py`, `progress_pump.py` |

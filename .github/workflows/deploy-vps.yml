@@ -20,7 +20,7 @@ name: Deploy VPS
 #
 # What this workflow deliberately does NOT do:
 #   - It does not create provider credentials. `hermes login` runs once, by
-#     hand, inside the container (BOOTSTRAP.md step 5) so keys never land in
+#     hand, inside the container (wiki/operations/vps-bootstrap.md step 5) so keys never land in
 #     `docker inspect` or a CI log.
 #   - It does not take a Hostinger snapshot. Hostinger keeps one snapshot per
 #     VM and creating one destroys the previous; restoring reverts the whole
@@ -70,7 +70,7 @@ concurrency:
 env:
   # This fork's own image, not upstream's. The fork carries code-layer security
   # fixes (CSP in hermes_cli/web_server.py, the credential-mode clamp in
-  # hermes_cli/config.py) that the upstream image does not have, and DEPLOY.md's
+  # hermes_cli/config.py) that the upstream image does not have, and the deployment page's
   # posture assumes they are present. Built by publish-image.yml.
   IMAGE_REPO: ghcr.io/${{ github.repository }}
 
