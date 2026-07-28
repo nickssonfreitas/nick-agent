@@ -33,6 +33,13 @@ builds an image from that commit, gates it on the docker integration suite,
 deploys it, runs the checklist, and rolls back to the previous digest if a hard
 check fails.
 
+**An architecture wiki written for LLMs.** [`wiki/`](wiki/index.md) maps the
+codebase one page per subsystem — entry points with file references, how the pieces
+connect, and what breaks if you touch them wrong — and links into `AGENTS.md` for the
+rules rather than restating them. `wiki/llms-wiki.txt` is the whole thing in one file
+for dropping into a model's context. Upstream's `llms.txt` covers the product
+documentation; this covers the code.
+
 **Code-layer security fixes** that upstream's published image does not carry —
 dashboard CSP, a credential-mode clamp keeping `.env` at `0600` across rewrites,
 SSRF flooring on provider validation, deep-link validation and log sanitisation in
