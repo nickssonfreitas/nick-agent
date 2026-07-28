@@ -251,7 +251,7 @@ def build_gateway_parser(
     # gateway enroll — enroll a self-hosted gateway with a relay connector
     # (connector⇄gateway auth). Redeems a single-use enrollment token for the
     # per-gateway secret + per-tenant delivery key and writes them to .env.
-    # See docs/relay-connector-contract.md (and the connector repo's
+    # See wiki/extensions/relay-connector-contract.md (and the connector repo's
     # docs/connector-gateway-auth-design.md). EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser(
         "enroll",

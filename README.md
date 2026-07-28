@@ -36,9 +36,12 @@ check fails.
 **An architecture wiki written for LLMs.** [`wiki/`](wiki/index.md) maps the
 codebase one page per subsystem — entry points with file references, how the pieces
 connect, and what breaks if you touch them wrong — and links into `AGENTS.md` for the
-rules rather than restating them. `wiki/llms-wiki.txt` is the whole thing in one file
-for dropping into a model's context. Upstream's `llms.txt` covers the product
-documentation; this covers the code.
+rules rather than restating them. It is an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+0.2 bundle: pages carry YAML frontmatter and are grouped into `concepts/`, `core/`,
+`surfaces/`, `state/`, `extensions/` and `operations/`, alongside `research/` and
+`decisions/`. `wiki/llms-wiki.txt` is the whole thing in one file for dropping into a
+model's context. Upstream's `llms.txt` covers the product documentation; this covers
+the code.
 
 **Code-layer security fixes** that upstream's published image does not carry —
 dashboard CSP, a credential-mode clamp keeping `.env` at `0600` across rewrites,
@@ -52,11 +55,11 @@ tests one of them directly.
 
 ## Deploying
 
-Read **[`deploy/vps-hardened/BOOTSTRAP.md`](deploy/vps-hardened/BOOTSTRAP.md)**
+Read **[`wiki/operations/vps-bootstrap.md`](wiki/operations/vps-bootstrap.md)**
 first. It splits the procedure along the line that matters: everything that
 creates or handles a secret stays manual, everything that moves an image digest is
-automated. [`DEPLOY.md`](deploy/vps-hardened/DEPLOY.md) is the full hardening
-walkthrough behind it.
+automated. [`wiki/operations/vps-deployment.md`](wiki/operations/vps-deployment.md)
+is the full hardening walkthrough behind it.
 
 | File | Purpose |
 |------|---------|

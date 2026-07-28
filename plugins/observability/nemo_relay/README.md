@@ -249,7 +249,7 @@ ordinary static component configuration, so ATOF and ATIF observability remain
 available. No dynamic plugin is loaded in that degraded mode.
 
 For the full generic Hermes middleware contract, see
-[`docs/middleware/README.md`](../../../docs/middleware/README.md).
+[`wiki/extensions/middleware.md`](../../../wiki/extensions/middleware.md).
 
 ## Canonical Local Examples
 

@@ -1,6 +1,6 @@
 """Invariant: the relay path sheds platform crypto — it re-validates nothing.
 
-Under the A2 trust model (see docs/relay-connector-contract.md §6), the
+Under the A2 trust model (see wiki/extensions/relay-connector-contract.md §6), the
 *connector* is the sole crypto/identity boundary: it verifies/decrypts every
 inbound platform payload at the edge (it holds the tenant secrets), normalizes
 it to a tenant-scoped ``MessageEvent``, and forwards only the sanitized event.
@@ -78,7 +78,7 @@ def test_relay_package_imports_no_platform_crypto():
         "crypto boundary). Found platform-crypto imports in the relay package:\n  "
         + "\n  ".join(offenders)
         + "\nMove verification to the connector edge; the gateway trusts the "
-        "normalized MessageEvent. See docs/relay-connector-contract.md §6."
+        "normalized MessageEvent. See wiki/extensions/relay-connector-contract.md §6."
     )
 
 

@@ -41,7 +41,7 @@ _FIRE_PURPOSE = "cron_fire"
 # before the relay's 30s timeout (observed in prod as relay 504s concentrated on
 # high-job-count instances). Reusing one client per URL keeps the signing keys
 # cached (NAS keys rotate rarely), so the steady state is zero JWKS fetches per
-# fire. See docs/chronos-managed-cron-contract.md and the betterstack triage.
+# fire. See wiki/extensions/chronos-cron-contract.md and the betterstack triage.
 _JWK_CLIENTS: Dict[str, Any] = {}
 _JWK_CLIENTS_LOCK = threading.Lock()
 

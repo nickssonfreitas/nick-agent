@@ -100,7 +100,7 @@ jobs:
             [ -n "${!var:-}" ] || missing="${missing} ${var}"
           done
           if [ -n "$missing" ]; then
-            echo "::error::missing repository secret(s):${missing} — see deploy/vps-hardened/BOOTSTRAP.md"
+            echo "::error::missing repository secret(s):${missing} — see wiki/operations/vps-bootstrap.md"
             exit 1
           fi
 

@@ -7,8 +7,11 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 > **Looking for the map, not the rules?** `wiki/` documents the codebase one page
 > per subsystem: entry points, how the pieces connect, and what breaks if you touch
 > them wrong. Start at [`wiki/index.md`](wiki/index.md), or drop
-> `wiki/llms-wiki.txt` (every page in one file) into context. This file stays the
-> authority on rules and rationale; the wiki links here rather than restating.
+> `wiki/llms-wiki.txt` (every page in one file) into context. It is an OKF 0.2
+> bundle; the frontmatter contract and folder layout are in
+> [`wiki/concepts/wiki-conventions.md`](wiki/concepts/wiki-conventions.md). This file
+> stays the authority on rules and rationale; the wiki links here rather than
+> restating.
 
 ## What Hermes Is
 
@@ -606,7 +609,7 @@ Two related traps worth knowing before touching JS dependencies:
   previous point rules out. Any `overrides`-based remediation is blocked until the
   resolver bug is fixed.
 
-Full triage, with the reproduction for each: `.devmind/product/quality/security/SEMGREP-TRIAGE_2026_07_24.md` section 8.
+Full triage, with the reproduction for each: `wiki/research/0005-semgrep-triage-2026-07-24.md` section 8.
 
 ---
 

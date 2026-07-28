@@ -17,7 +17,7 @@ contract has four concerns:
      routes a mid-turn /stop down the socket that owns the session_key.
 
 EXPERIMENTAL: may change without a deprecation cycle until >=2 Class-1 platforms
-validate it. See docs/relay-connector-contract.md.
+validate it. See wiki/extensions/relay-connector-contract.md.
 """
 
 from __future__ import annotations

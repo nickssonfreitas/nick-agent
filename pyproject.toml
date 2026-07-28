@@ -69,7 +69,7 @@ dependencies = [
   # guard in tools/read_extract.py (a CORE tool — it backs read_file for
   # .docx/.xlsx) conditional on an unrelated messaging extra being installed,
   # which is the wrong shape for a security default. See
-  # BANDIT-TRIAGE_2026_07_25.md (BND-001).
+  # wiki/research/0007-bandit-triage-2026-07-25.md (BND-001).
   "defusedxml==0.7.1",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",

@@ -319,7 +319,7 @@ scan_semgrep() {
   # Exclusoes por REGRA (nao por caminho). As duas abaixo produziram 180
   # findings e zero verdadeiros positivos na triagem de 2026-07-24, e sao
   # estruturalmente incompativeis com este codebase, nao acidentalmente
-  # ruidosas — ver SEMGREP-TRIAGE_2026_07_24.md secoes 4 e 5:
+  # ruidosas — ver wiki/research/0005-semgrep-triage-2026-07-24.md secoes 4 e 5:
   #
   #  - sqlalchemy-execute-raw-query (97): interpolacao de IDENTIFICADOR, onde
   #    parametro SQL nao existe por definicao. PRAGMA, REINDEX com escape de

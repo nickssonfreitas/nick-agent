@@ -3,7 +3,7 @@
 The gateway dials OUT to the connector's relay endpoint over a WebSocket and
 speaks the newline-delimited JSON frame protocol defined in the connector repo
 (``gateway-gateway`` ``src/relay/protocol.ts``) and mirrored in
-``docs/relay-connector-contract.md``:
+``wiki/extensions/relay-connector-contract.md``:
 
   gateway -> connector : hello, outbound, interrupt
   connector -> gateway : descriptor, inbound, outbound_result, interrupt_inbound
