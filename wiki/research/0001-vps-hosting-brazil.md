@@ -193,7 +193,12 @@ to change the terms silently), then Hostinger KVM 2 (R$ 42,99 locked behind a 24
 month prepay, renewing at R$ 77,99, and only 2 vCPU against a CPU-bound transcription
 load).
 
-**The arm64 question resolves to: only for Oracle.** Paid ARM at Hetzner now costs more
+**The arm64 question resolves to: only for Oracle.**
+
+> Acted on in [decision 0005](../decisions/0005-arm64-in-the-release-pipeline.md),
+> which restores the matrix leg but stays `proposed` until the arm64 build has
+> actually run.
+ Paid ARM at Hetzner now costs more
 than the equivalent x86, so the CI work is worth doing only if the free tier is the
 target. The shape to copy already exists and works — `docker.yml` carries the full
 amd64 + arm64 matrix with push-by-digest and manifest merge; `publish-image.yml` is the

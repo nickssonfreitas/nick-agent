@@ -25,3 +25,4 @@ its replacement, because the rejected path is half the value of the record.
 * [0002. Keep Telegram streamed replies going past the first overflow chunk](0002-telegram-overflow-continuations.md) - The fix for streamed Telegram replies dying after the first overflow chunk.
 * [0003. Expose an OpenAI-compatible API server](0003-openai-compatible-api-server.md) - Serving the agent behind an OpenAI-compatible HTTP surface. Shipped, and wider than proposed.
 * [0004. Support streaming LLM responses](0004-streaming-response-support.md) - Streaming model output through the loop to each surface. Shipped, opt-in, off by default.
+* [0005. Build the release image for arm64 as well as amd64](0005-arm64-in-the-release-pipeline.md) - Restoring the arm64 matrix leg, because the amd64-only choice was derived from a provider nobody had compared. Proposed; the leg has not run yet.
