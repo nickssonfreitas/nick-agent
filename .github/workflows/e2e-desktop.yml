@@ -82,7 +82,17 @@ jobs:
       - name: Run Playwright E2E tests
         working-directory: apps/desktop
         env:
+          # Single env block: a second `env:` on the same step is a duplicate
+          # mapping key. GitHub rejects the whole file (the run dies at
+          # startup with "'env' is already defined", producing zero jobs),
+          # and PyYAML silently keeps only the last block — which is how
+          # REF_NAME went missing while still looking fine locally.
           REF_NAME: ${{ github.ref_name }}
+          CI: "true"
+          # Ensure no real API keys leak into the test env.
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
         run: |
           if [ "$REF_NAME" = "main" ]; then
             echo "On main — generating/updating baseline screenshots"
@@ -93,12 +103,6 @@ jobs:
             xvfb-run -a --server-args="-screen 0 1280x1024x24" \
               npx playwright test --reporter=list
           fi
-        env:
-          CI: "true"
-          # Ensure no real API keys leak into the test env.
-          OPENROUTER_API_KEY: ""
-          OPENAI_API_KEY: ""
-          NOUS_API_KEY: ""
 
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache
