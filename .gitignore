@@ -204,3 +204,14 @@ native/fts5_cjk/*.so
 .security/*
 !.security/install.sh
 !.security/scan.sh
+
+# DevMind local tool state. Enumerated per-path rather than ignoring
+# .devmind/ wholesale, because .devmind/product/quality/security/ is tracked
+# on purpose — it holds the security audit trail (triage docs, SBOMs).
+.devmind/locks/
+.devmind/memory/
+.devmind/workflows/
+.devmind/product/quality/assessments/
+.devmind/product/quality/codebase/
+.devmind/execution-registry.json
+.devmind/onboarding-state.json
