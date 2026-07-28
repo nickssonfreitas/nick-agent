@@ -63,7 +63,7 @@ def test_memory_context_injected_into_initial_summary_prompt_with_focus():
     assert len(prompts) == 1
     assert "MEMORY PROVIDER CONTEXT" in prompts[0]
     assert "User uses JWT tokens with a one-hour expiry." in prompts[0]
-    assert 'FOCUS TOPIC: "authentication"' in prompts[0]
+    assert "<focus-topic>\nauthentication\n</focus-topic>" in prompts[0]
 
 
 def test_memory_context_injected_into_iterative_summary_prompt():
