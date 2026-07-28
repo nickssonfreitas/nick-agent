@@ -13,6 +13,7 @@
 | **Remaining open** | see sections 7 and 8 |
 | **Updated** | 2026-07-25 — sections 7 and 8 extend this beyond semgrep to the rest of the audit (bandit, gitleaks, pip-audit, checkov, npm). Ruleset calibration from section 5 landed in `25b1fe1b5`. |
 | **Updated** | 2026-07-27 — section 9 triages the first CodeQL run (Python); section 10 triages its JS/TS sibling, records the five fixes that landed, two findings retracted after reading the code, and three items found while verifying that no scanner flagged. |
+| **Updated** | 2026-07-28 — section 10's open items are closed: bridge authentication (`aa7d77b35`, and the real hole was hostile bridge adoption, not the unauthenticated routes) and the orphaned bridge tests, now wired into CI with the server-side access controls covered. |
 
 Every one of the 516 semgrep findings was triaged by reading the flagged code,
 not by pattern-matching the rule name. Two are real defects and are written up
@@ -774,30 +775,76 @@ polling. Inbound WhatsApp would stop working with zero output explaining it.
 and independent of the header change, but shipped with it because the new guard
 introduces a 403 that would otherwise be invisible.
 
-### Still open
+### Bridge authentication — closed, and it was worse than triaged
 
-**Bridge authentication.** `scripts/whatsapp-bridge/bridge.js` remains
-unauthenticated on loopback. The accurate description of that surface is not
-"arbitrary file read" but **unauthenticated full control of a WhatsApp
-account**: `/send` impersonates, `/edit` rewrites already-sent messages with
-`fromMe: true` (retroactive history falsification on both sides), `/messages`
-reads and destroys, `/chat/:id` enumerates group participants.
+Written up as still-open in the first draft of this section. It is fixed
+(`aa7d77b35`), and the reason it needed a second look is worth keeping.
 
-A shared token attacks the *secondary* risk (a cross-UID attacker on a shared
-host) and does **not** close the dominant one, because a prompt-injected request
-originates inside the legitimate, token-bearing gateway. Two implementation
-traps if it is chosen: `_standalone_send` runs in a different process reading
-`config.yaml`, so the secret needs a persisted sidecar (precedent:
-`_write_bridge_pidfile`), and a per-spawn random token would silently break the
-bridge-reuse path, whose handshake compares only `scriptHash` — yielding a
-"healthy" bridge that rejects everything.
+The surface was never "arbitrary file read". `/send` impersonates, `/edit`
+rewrites already-sent messages with `fromMe: true` (retroactive history
+falsification on both sides), `/messages` reads and destroys, `/chat/:id`
+enumerates group participants — **unauthenticated full control of a WhatsApp
+account**.
 
-**The bridge's own tests are orphaned.** `allowlist.test.mjs`,
-`owner_message_gate.test.mjs`, `outbound_ids.test.mjs` and
-`bridge.sendqueue.test.mjs` sit beside `bridge.js` and **nothing invokes them** —
-no workflow, no script, no `package.json` entry. Consequence for the item above:
-the server side of the drain guard has no automated coverage. `bridge.js` cannot
-be imported by a test (it connects to WhatsApp at module load) and `express` is
-not available to the vitest workspace, so the client side is what is covered
-today. Wiring these files into CI is the prerequisite for testing the server
-side properly.
+Then the actual hole turned out to be one level up from any of that. The
+bridge-reuse path in `connect()` adopted any running bridge whose `/health`
+returned a matching `scriptHash`, and that hash is sha256 of `bridge.js`, a
+world-readable file in the install tree. Any local UID can compute it. A
+process that bound `127.0.0.1:3000` before the gateway was adopted outright:
+`_mark_connected()`, a persistent session opened against it, `_poll_messages`
+feeding its JSON into the agent. `_kill_port_process` never ran, sitting after
+the `return True`. That is a read/write man-in-the-middle on the account **and**
+on the agent's inbound prompts, not merely writes to it.
+
+That finding also invalidated the obvious fix. A shared token alone is *worse
+than useless* here: the client speaks first, so the gateway would hand the
+token to the squatter on the first request after adoption. What shipped is
+three controls, none of which is sufficient alone:
+
+- **Proof before secret.** `/health?nonce=` returns `HMAC(token, nonce)`. The
+  caller sends no secret, and only sends the token once the peer has proven it
+  holds one.
+- **Unix domain socket, 0600 in a 0700 directory,** on POSIX. Removes the TCP
+  listener, so there is no port to squat. `secure_parent_dir` (which existed
+  with a single caller) enforces the directory mode rather than trusting umask.
+- **Token over loopback TCP on Windows,** where file-backed `AF_UNIX` is
+  unreliable. Not a new pattern: `tools/code_execution_tool.py` already does
+  `AF_UNIX`+0600 on POSIX, TCP on Windows, and a token valid on both.
+
+Still true, and worth repeating because it is the thing most easily
+misremembered: **none of this touches prompt injection.** An injected request
+comes from the legitimate gateway, which holds the socket and the token by
+construction. The scope is the local-UID boundary.
+
+Two traps that shaped the implementation. `_standalone_send` runs in a separate
+process, so the secret lives in a persisted `0600` sidecar rather than in
+`config.yaml`; and the token is create-if-absent and **never rotated**, because
+a per-spawn token would leave a healthy running bridge rejecting the gateway
+that just adopted it.
+
+### The bridge's tests were orphaned — now wired
+
+`scripts/whatsapp-bridge/` is deliberately **not** an npm workspace: workspaces
+hoist dependencies to the root `node_modules`, and the adapter installs the
+bridge's dependencies on demand into the bridge directory itself (guarded by
+the `.hermes-pkg-hash` stamp). Making it a workspace would break that at
+runtime.
+
+The cost was invisible: `npm query .workspace` in `js-tests.yml` never
+discovered it, so five `*.test.mjs` files beside `bridge.js` ran nowhere — no
+workflow, no script, no `package.json` entry. The only repo-wide hit for
+`*.test.mjs` was an *exclusion* in `.security/scan.sh`.
+
+Fixed with a dedicated `bridge` job rather than by making it a workspace. Four
+of the five files need no dependencies at all; `bridge.native.test.mjs` imports
+baileys, so the job runs `npm ci --prefix scripts/whatsapp-bridge` to cover the
+full set instead of a convenient subset. Verified locally: 39 tests, 0 failures.
+
+This also unblocked the server side of the access controls, which until now had
+no coverage because `bridge.js` cannot be imported by a test (it connects to
+WhatsApp at module load). The decisions moved into `bridge_auth.js` — the same
+sibling-module pattern `allowlist.js` and `owner_message_gate.js` already use —
+and `bridge_auth.test.mjs` covers the token gate, the `/health` proof, and the
+drain header. One of those tests recomputes the HMAC from the primitive rather
+than from the function under test, pinning the wire format that
+`_bridge_health_proof` reimplements on the Python side.
