@@ -458,7 +458,7 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
 | Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
 | Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
-| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Session picker | `activeSessionSwitcher.tsx` | `session.list/resume` |
 | Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
