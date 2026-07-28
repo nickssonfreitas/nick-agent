@@ -211,6 +211,39 @@ class TestSkillsShGroupings:
         assert restored.extra == {"category": "Inference AI"}
 
 
+class TestGitHubSourceInspectPaths:
+    """Where inspect() looks for SKILL.md, by identifier shape."""
+
+    def _source(self):
+        return GitHubSource(auth=MagicMock(spec=GitHubAuth))
+
+    def _requested_path(self, identifier):
+        """Return the in-repo path inspect() asks _fetch_file_content for."""
+        src = self._source()
+        seen = []
+        with patch.object(src, "_fetch_file_content",
+                          side_effect=lambda repo, path: seen.append((repo, path))):
+            src.inspect(identifier)
+        return seen[0] if seen else None
+
+    def test_bare_owner_repo_reads_root_skill_md(self):
+        # Single-skill repos (SKILL.md beside the README) are a real shape.
+        # Without this, `hermes skills install owner/repo` returns nothing
+        # and only the odd trailing-slash form resolves.
+        assert self._requested_path("blader/humanizer") == ("blader/humanizer", "SKILL.md")
+
+    def test_trailing_slash_reads_root_skill_md_without_double_slash(self):
+        assert self._requested_path("blader/humanizer/") == ("blader/humanizer", "SKILL.md")
+
+    def test_nested_path_is_preserved(self):
+        assert self._requested_path("mattpocock/skills/skills/engineering/tdd") == (
+            "mattpocock/skills", "skills/engineering/tdd/SKILL.md"
+        )
+
+    def test_identifier_without_a_repo_is_rejected(self):
+        assert self._source().inspect("humanizer") is None
+
+
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
@@ -1456,6 +1489,30 @@ class TestTapsManager:
         taps = mgr.list_taps()
         assert len(taps) == 2
 
+    def test_add_same_repo_with_different_path_is_accepted(self, tmp_path):
+        # A repo that nests skills by category needs one tap per category.
+        # Dedup keys on (repo, path), so the second category is not rejected
+        # as a duplicate — mirroring DEFAULT_TAPS carrying two entries for
+        # openai/skills.
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        assert mgr.add("owner/repo", "skills/engineering/") is True
+        assert mgr.add("owner/repo", "skills/productivity/") is True
+        paths = {t["path"] for t in mgr.load()}
+        assert paths == {"skills/engineering/", "skills/productivity/"}
+
+    def test_add_same_repo_and_path_is_rejected(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        assert mgr.add("owner/repo", "skills/engineering/") is True
+        assert mgr.add("owner/repo", "skills/engineering/") is False
+        assert len(mgr.load()) == 1
+
+    def test_remove_drops_every_path_for_the_repo(self, tmp_path):
+        mgr = TapsManager(path=tmp_path / "taps.json")
+        mgr.add("owner/repo", "skills/engineering/")
+        mgr.add("owner/repo", "skills/productivity/")
+        assert mgr.remove("owner/repo") is True
+        assert mgr.load() == []
+
 
 # ---------------------------------------------------------------------------
 # LobeHubSource._convert_to_skill_md
@@ -1740,6 +1797,28 @@ class TestProviderFilter:
         assert _PROVIDER_FILTER_VALUES == frozenset(
             v.lower() for v in GITHUB_TAP_PROVIDERS.values()
         )
+
+    def test_every_default_tap_has_a_provider_label(self):
+        # A tap without a label lands in the catalog as a bare "GitHub"
+        # entry, losing the per-tap identity that makes `--source <provider>`
+        # work. Adding a tap and forgetting its label is the easy miss.
+        from tools.skills_hub import GITHUB_TAP_PROVIDERS, GitHubSource
+
+        for tap in GitHubSource.DEFAULT_TAPS:
+            repo = tap["repo"]
+            assert repo.lower() in GITHUB_TAP_PROVIDERS, (
+                f"Default tap {repo!r} has no GITHUB_TAP_PROVIDERS label."
+            )
+
+    def test_provider_labels_are_single_token(self):
+        # Each label becomes a `--source` filter value; a label containing
+        # whitespace would have to be quoted on the command line.
+        from tools.skills_hub import GITHUB_TAP_PROVIDERS
+
+        for repo, label in GITHUB_TAP_PROVIDERS.items():
+            assert label.split() == [label], (
+                f"Provider label {label!r} for {repo!r} contains whitespace."
+            )
 
     def test_unified_search_provider_filter_keeps_index_source(self):
         # A provider filter must NOT be treated as a real source id (which would

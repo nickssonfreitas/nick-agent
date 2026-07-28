@@ -508,6 +508,15 @@ GITHUB_TAP_PROVIDERS = {
     "voltagent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "minimax-ai/cli": "MiniMax",
+    # Single-token labels only: each becomes a `--source` filter value via
+    # _PROVIDER_FILTER_VALUES, and a label with a space would force the user
+    # to quote it on the command line.
+    "mattpocock/skills": "MattPocock",
+    "zeropointrepo/youtube-skills": "TranscriptAPI",
+    "witt3rd/oh-my-hermes": "OhMyHermes",
+    "composio-community/skills": "Composio",
+    "jakubkrehel/make-interfaces-feel-better": "Krehel",
+    "browser-use/browser-harness": "BrowserUse",
 }
 
 
@@ -565,6 +574,50 @@ class GitHubSource(SkillSource):
         # https://github.com/NVIDIA/skills/tree/main/skills
         {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        # mattpocock/skills nests by category, so it needs one tap per
+        # category — _list_skills_in_repo scans exactly one directory level,
+        # so a single tap at "skills/" would see the category dirs (which
+        # carry no SKILL.md) and return nothing. Only the two curated
+        # categories are tapped: the repo also ships deprecated/,
+        # in-progress/ and personal/, which are not meant for consumption.
+        {"repo": "mattpocock/skills", "path": "skills/engineering/"},
+        {"repo": "mattpocock/skills", "path": "skills/productivity/"},
+        # ZeroPointRepo/youtube-skills: YouTube search / channels / playlists
+        # / transcripts via the third-party TranscriptAPI service (API key
+        # required; free tier is credit-capped).
+        #
+        # Install selectively. Its search / channels / playlist / data skills
+        # add capability Hermes lacks, but seven of the twelve (transcript,
+        # captions, subtitles, video-transcript, transcriptapi, youtube-full,
+        # yt) duplicate the bundled skills/media/youtube-content, which does
+        # the same job for free via the open-source youtube-transcript-api.
+        # Those seven also carry deliberately broad trigger descriptions —
+        # two claim to apply "even if not mentioned" — so installing the full
+        # set puts seven near-duplicate, over-triggering entries into the
+        # skill listing and dilutes routing (see the description standard in
+        # AGENTS.md). A tap only makes them discoverable; the dilution risk
+        # lands at install time.
+        {"repo": "ZeroPointRepo/youtube-skills", "path": "skills/"},
+        # oh-my-hermes: multi-agent orchestration skills written against
+        # Hermes primitives. Its skills live under plugins/omh/, NOT the
+        # skills/ its README advertises — a default-path tap finds nothing.
+        {"repo": "witt3rd/oh-my-hermes", "path": "plugins/omh/skills/"},
+        {"repo": "composio-community/skills", "path": "skills/"},
+        {"repo": "jakubkrehel/make-interfaces-feel-better", "path": "skills/"},
+        # browser-use/browser-harness ships one skill next to its Python CLI;
+        # the skill drives the CLI, which the user installs separately.
+        {"repo": "browser-use/browser-harness", "path": "skills/"},
+        #
+        # Deliberately NOT default taps — too large to enumerate:
+        # _list_skills_in_repo fetches one SKILL.md per skill directory, so a
+        # tap costs one API call per skill on every cache miss.
+        # mukul975/Anthropic-Cybersecurity-Skills carries 817 skills and
+        # calesthio/OpenMontage 130 (under .agents/skills/). At 817 calls the
+        # first browse burns ~16% of the authenticated 5000/hr budget and is
+        # simply impossible on the unauthenticated 60/hr limit. Users who
+        # want them opt in explicitly:
+        #   hermes skills tap add mukul975/Anthropic-Cybersecurity-Skills
+        #   hermes skills tap add calesthio/OpenMontage --path .agents/skills/
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -698,12 +751,17 @@ class GitHubSource(SkillSource):
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
         parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
-        skill_path = parts[2].rstrip("/")
-        skill_md_path = f"{skill_path}/SKILL.md"
+        # A bare ``owner/repo`` means the skill sits at the repo root — the
+        # single-skill repo shape (SKILL.md beside the README) rather than a
+        # collection under ``skills/``. Collection repos have no root
+        # SKILL.md, so they still resolve to None here and fall through to
+        # the normal path-based lookup.
+        skill_path = (parts[2] if len(parts) > 2 else "").rstrip("/")
+        skill_md_path = f"{skill_path}/SKILL.md" if skill_path else "SKILL.md"
 
         content = self._fetch_file_content(repo, skill_md_path)
         if not content:
@@ -3483,9 +3541,16 @@ class TapsManager:
         self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
 
     def add(self, repo: str, path: str = "skills/") -> bool:
-        """Add a tap. Returns False if already exists."""
+        """Add a tap. Returns False if this (repo, path) pair already exists.
+
+        Dedup keys on the pair, not the repo alone: a repo that nests skills
+        by category needs one tap per category (``skills/engineering/`` and
+        ``skills/productivity/``), the same way ``DEFAULT_TAPS`` carries two
+        entries for ``openai/skills``. Keying on repo alone would silently
+        reject the second category.
+        """
         taps = self.load()
-        if any(t["repo"] == repo for t in taps):
+        if any(t["repo"] == repo and t.get("path", "skills/") == path for t in taps):
             return False
         taps.append({"repo": repo, "path": path})
         self.save(taps)

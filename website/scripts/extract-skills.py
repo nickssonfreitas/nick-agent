@@ -99,6 +99,12 @@ GITHUB_TAP_LABELS = {
     "VoltAgent/awesome-agent-skills": "VoltAgent",
     "garrytan/gstack": "gstack",
     "MiniMax-AI/cli": "MiniMax",
+    "mattpocock/skills": "MattPocock",
+    "ZeroPointRepo/youtube-skills": "TranscriptAPI",
+    "witt3rd/oh-my-hermes": "OhMyHermes",
+    "composio-community/skills": "Composio",
+    "jakubkrehel/make-interfaces-feel-better": "Krehel",
+    "browser-use/browser-harness": "BrowserUse",
 }
 
 # Legacy filename -> label mapping for the deprecated skills/index-cache/
