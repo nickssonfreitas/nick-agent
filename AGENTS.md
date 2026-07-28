@@ -4,6 +4,12 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+> **Looking for the map, not the rules?** `wiki/` documents the codebase one page
+> per subsystem: entry points, how the pieces connect, and what breaks if you touch
+> them wrong. Start at [`wiki/index.md`](wiki/index.md), or drop
+> `wiki/llms-wiki.txt` (every page in one file) into context. This file stays the
+> authority on rules and rationale; the wiki links here rather than restating.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
