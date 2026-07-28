@@ -44,7 +44,7 @@ import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, chmodSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -62,6 +62,12 @@ import {
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+import {
+  POLL_HEADER,
+  drainNeedsHeader,
+  healthBody,
+  requestIsUnauthorized,
+} from './bridge_auth.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -839,27 +845,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Token gate. Only meaningful on the TCP transport (Windows), where any local
-// process can connect; over the unix socket the filesystem already decided who
-// gets to speak. Mounted for both so the two transports cannot drift.
-//
-// /health is exempt because it is the bootstrap: the gateway calls it before it
-// knows whether this process is trustworthy, and the handler proves our
-// identity there instead (see the ?nonce= handling below).
-function tokensMatch(candidate) {
-  const a = Buffer.from(String(candidate || ''), 'utf8');
-  const b = Buffer.from(BRIDGE_TOKEN, 'utf8');
-  // timingSafeEqual throws on a length mismatch, which would itself leak
-  // length, so compare a fixed-size digest of each side instead.
-  const da = createHash('sha256').update(a).digest();
-  const db = createHash('sha256').update(b).digest();
-  return timingSafeEqual(da, db);
-}
-
+// Token gate. Only load-bearing on the TCP transport (Windows), where any
+// local process can connect; over the unix socket the filesystem already
+// decided who may speak. Mounted for both so the transports cannot drift.
+// The decision itself lives in bridge_auth.js so it is testable — this file
+// connects to WhatsApp at import, so no test can load it.
 app.use((req, res, next) => {
-  if (!BRIDGE_TOKEN) return next();
-  if (req.path === '/health') return next();
-  if (!tokensMatch(req.headers['x-hermes-bridge-token'])) {
+  if (requestIsUnauthorized(req.path, req.headers, BRIDGE_TOKEN)) {
     return res.status(401).json({ error: 'Invalid or missing bridge token.' });
   }
   next();
@@ -883,10 +875,8 @@ app.use((req, res, next) => {
 // the drain the same property: a custom request header triggers a preflight
 // OPTIONS, the bridge answers it without CORS headers, and the browser never
 // issues the real GET. A non-browser client on this host is unaffected.
-const POLL_HEADER = 'x-hermes-bridge';
-
 app.get('/messages', (req, res) => {
-  if (!req.headers[POLL_HEADER]) {
+  if (drainNeedsHeader(req.headers)) {
     return res.status(403).json({
       error: `Missing ${POLL_HEADER} header. The message drain is destructive and rejects simple cross-origin requests.`,
     });
@@ -1174,11 +1164,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
   };
-  const nonce = req.query?.nonce;
-  if (BRIDGE_TOKEN && typeof nonce === 'string' && nonce) {
-    body.proof = createHmac('sha256', BRIDGE_TOKEN).update(nonce).digest('hex');
-  }
-  res.json(body);
+  res.json(healthBody(body, BRIDGE_TOKEN, req.query?.nonce));
 });
 
 // Start
