@@ -1,0 +1,101 @@
+name: CD (main → VPS)
+
+# Continuous deployment. Every push to main builds an image from that commit,
+# gates it on the docker integration suite, deploys it to the VPS, verifies the
+# result against the security checklist, and rolls back if the checklist
+# rejects it.
+#
+# The branch split is the whole design:
+#
+#   dev   integration branch. No deploy, ever. Nothing here triggers on dev, so
+#         work in progress cannot reach the box by accident. Build a dev image
+#         on demand with `gh workflow run publish-image.yml --ref dev`.
+#   main  the VPS. A commit landing here IS a deploy. Treat merging into main
+#         as the release action, because that is what it now is.
+#
+# Two properties make continuous tolerable here rather than reckless. The image
+# only exists if `tests/docker/` passed against those exact bytes — a failing
+# build publishes nothing, so a broken commit cannot reach the host. And the
+# deploy backs up both databases before it swaps anything, then rolls back on
+# its own if a hard check fails.
+#
+# What it still cannot do for you: schema downgrades. Neither state.db nor
+# kanban.db has a downgrade guard, so a rollback restores the previous image
+# but NOT the previous database. That is why the pre-deploy backup exists and
+# why the deploy says so loudly when it rolls back.
+#
+# Want a human in the loop without giving up the pipeline? Add required
+# reviewers to the `production` environment. The build still runs on every
+# push; the deploy job parks and waits for an approval instead of proceeding.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # Documentation-only commits do not change the image, and a 13-minute
+      # build plus a container restart is a poor trade for a typo fix. Anything
+      # that can alter runtime behaviour is deliberately absent from this list.
+      - '**/*.md'
+      - 'docs/**'
+      - 'website/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# One deploy at a time, and never cancel one mid-flight: a half-applied digest
+# swap with the containers down is worse than either version. Rapid merges
+# queue instead of racing.
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/publish-image.yml
+    permissions:
+      contents: read
+      packages: write
+
+  deploy:
+    needs: build
+    # The digest, not the tag. The tag exists for humans; the digest names the
+    # exact bytes the build just tested, and cannot be repointed between jobs.
+    uses: ./.github/workflows/deploy-vps.yml
+    with:
+      image_digest: ${{ needs.build.outputs.digest }}
+    permissions:
+      contents: read
+      packages: read
+
+  summary:
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report
+        env:
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          TAG: ${{ needs.build.outputs.tag }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          {
+            echo "### CD — main to VPS"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Build | ${BUILD} |"
+            echo "| Deploy | ${DEPLOY} |"
+            echo "| Tag | \`${TAG:-—}\` |"
+            echo "| Digest | \`${DIGEST:-—}\` |"
+            echo ""
+            if [ "${DEPLOY}" != "success" ] && [ "${BUILD}" = "success" ]; then
+              echo "The deploy job rolled back to the previous digest. The database was"
+              echo "NOT restored — if the failed image migrated the schema, restore the"
+              echo "pre-deploy backup from \`/opt/hermes/backups/\` by hand."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
