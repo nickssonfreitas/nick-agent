@@ -848,3 +848,67 @@ and `bridge_auth.test.mjs` covers the token gate, the `/health` proof, and the
 drain header. One of those tests recomputes the HMAC from the primitive rather
 than from the function under test, pinning the wire format that
 `_bridge_health_proof` reimplements on the Python side.
+
+---
+
+## 11. Re-scan 2026-07-28 — and a baseline that was not what it looked like
+
+Run `.security/reports/20260728T101619Z`, at `98a2b6294`, after the eleven fixes
+in sections 9 and 10. 0 scanners in error.
+
+**The comparison baseline had to be corrected first.** `20260727T095228Z` — the
+run those sections were triaged from — records `semgrep: count=0, exit=2,
+status=error`. Semgrep *failed* there; the zero was not a clean result. Five
+runs happened that day, and the only one with zero scanner errors is
+`20260727T131941Z`. That is the baseline used below. Worth stating plainly
+because a scanner reporting zero after a crash is the single most dangerous
+output a security pipeline can produce, and it is invisible unless the summary
+is read for `status`, not just `count`.
+
+| Scanner | 27/07 (131941Z) | 28/07 | |
+|---------|----------------:|------:|---|
+| **total** | 1988 | 1969 | −19 |
+| semgrep | 300 | 295 | −5 |
+| codeql-python | 1207 | **1212** | **+5** |
+| codeql-javascript-typescript | 54 | 35 | −19 |
+| bandit, gitleaks, pip-audit, npm-audit, osv, trivy, shellcheck, checkov | | | unchanged |
+
+The JS/TS −19 mixes two effects and should not be read as "the fixes removed
+19": the untracked-artifact cut (`8eb0ba5cb`) accounts for 54 → 38, and the
+fixes for 38 → 35.
+
+### The +5: a correct fix opened a new dataflow
+
+All five are `py/log-injection` in `tools/url_safety.py`, a file nobody touched.
+The taint source is `hermes_cli/web_server.py:7581` — the dashboard's provider
+validation. In other words **the SSRF fix from `0bd0a42d4` created them**, by
+routing a fully user-controlled `base_url` into a module that logs it. This is
+the case a re-scan exists to catch: not a regression in the fix, but new reach
+that the fix legitimately introduced.
+
+Four of the five are false positives, verified by running it rather than by
+reading the rule name. They log `hostname`, and Python strips tab/CR/LF from a
+URL before parsing (`urlparse("http://ev\nil.com")` → `evil.com`), so a hostname
+cannot carry a line break.
+
+**The fifth is real.** `tools/url_safety.py:375` logged the **raw** `url`, not
+the parsed hostname, and a raw string keeps its newlines. Same CWE-117 shape
+fixed in the desktop in section 10. Mitigating: `debug` level, exception path
+only. Aggravating: that branch fires precisely *when parsing failed*, i.e. when
+the value is least likely to be well-formed — so the sink is best reached
+exactly by the input most likely to be hostile. The sibling at `:466` has the
+same defect at `warning` level and was fixed with it.
+
+`safe_url_for_log` in `gateway/platforms/base.py` was considered and rejected:
+its `else` branch returns the input unchanged when the URL has no scheme or
+netloc, which is the malformed case these sinks handle. A local
+`_escape_for_log` escapes control characters instead of stripping them, so the
+attempt stays visible to whoever reads the log — deleting the newline would
+hide that anything happened.
+
+### Note for the next run
+
+`gitleaks-worktree` reports 1 finding against
+`session_retention.py:57` (`generic-api-key`). It is in the scan's own source
+snapshot under `/tmp`, so it is a worktree-state finding, not a committed
+secret — untriaged as of this run.
