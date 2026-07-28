@@ -37,6 +37,34 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+# Control characters in a value that reaches a log line let a caller forge
+# additional lines (CWE-117): an embedded newline produces output that is
+# indistinguishable from a real log entry.
+#
+# This matters here specifically because the dashboard's provider validation
+# hands this module a fully user-controlled ``base_url``. The hostname sinks
+# below are safe on their own — ``urlsplit``/``urlparse`` strip tab, CR and LF
+# from the URL before parsing, so a hostname cannot carry one — but the two
+# error paths log the **raw** string, and they fire precisely when parsing
+# failed, which is when the value is least likely to be well-formed.
+_LOG_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _escape_for_log(value: Any, max_len: int = 200) -> str:
+    """Return *value* as a single-line string safe to interpolate into a log.
+
+    Escapes rather than strips, so the diagnostic value survives: for an
+    operator reading the log, ``evil.com\\x0aInjected`` is the message. Deleting
+    the character would hide that anything was attempted at all.
+    """
+    escaped = _LOG_CONTROL_RE.sub(
+        lambda m: "\\x{:02x}".format(ord(m.group())), str(value)
+    )
+    if len(escaped) > max_len:
+        return escaped[:max_len] + "..."
+    return escaped
+
+
 def normalize_url_for_request(url: str) -> str:
     """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
 
@@ -372,7 +400,11 @@ def is_always_blocked_url(url: str) -> bool:
     except Exception as exc:
         # Parse failures or unexpected errors — don't claim the URL is
         # always-blocked.  Caller decides what to do with a malformed URL.
-        logger.debug("is_always_blocked_url error for %s: %s", url, exc)
+        logger.debug(
+            "is_always_blocked_url error for %s: %s",
+            _escape_for_log(url),
+            _escape_for_log(exc),
+        )
         return False
 
 
@@ -463,7 +495,11 @@ def is_safe_url(url: str) -> bool:
     except Exception as exc:
         # Fail closed on unexpected errors — don't let parsing edge cases
         # become SSRF bypass vectors
-        logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
+        logger.warning(
+            "Blocked request — URL safety check error for %s: %s",
+            _escape_for_log(url),
+            _escape_for_log(exc),
+        )
         return False
 
 
