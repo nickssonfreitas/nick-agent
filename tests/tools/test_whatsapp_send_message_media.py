@@ -294,3 +294,123 @@ def test_missing_captioned_file_falls_back_to_text():
     assert len(calls) == 1
     assert calls[0][0].endswith("/send")
     assert calls[0][1]["message"] == "floor plan"
+
+
+# ---------------------------------------------------------------------------
+# _standalone_send — bridge transport and authentication
+# ---------------------------------------------------------------------------
+
+
+class TestStandaloneSendTransport:
+    """The cron/out-of-process delivery path must authenticate like the gateway.
+
+    ``_standalone_send`` runs in a different process from the gateway, so it
+    re-derives the socket and token from the session directory rather than
+    inheriting them. If that derivation breaks, every request 401s against a
+    token-bearing bridge and scheduled WhatsApp delivery stops — the kind of
+    failure nobody notices until a message does not arrive.
+    """
+
+    @staticmethod
+    def _capture_session():
+        """Return (ClientSession replacement, list of kwargs it was built with)."""
+        built = []
+
+        def _factory(*args, **kwargs):
+            built.append(kwargs)
+            resp = MagicMock(status=200)
+            resp.json = AsyncMock(return_value={"messageId": "m1"})
+            resp.text = AsyncMock(return_value="")
+            post_ctx = MagicMock()
+            post_ctx.__aenter__ = AsyncMock(return_value=resp)
+            post_ctx.__aexit__ = AsyncMock(return_value=False)
+
+            session = MagicMock()
+            session.post = MagicMock(return_value=post_ctx)
+            ctx = MagicMock()
+            ctx.__aenter__ = AsyncMock(return_value=session)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+            return ctx
+
+        return _factory, built
+
+    def test_sends_the_bridge_token(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_TOKEN_HEADER,
+            _read_or_create_bridge_token,
+        )
+
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        token = _read_or_create_bridge_token(session_dir)
+        pconfig = SimpleNamespace(
+            token="", extra={"bridge_port": 3000, "session_path": str(session_dir)}
+        )
+
+        factory, built = self._capture_session()
+        with patch("aiohttp.ClientSession", side_effect=factory):
+            asyncio.run(_standalone_send(pconfig, "12345", "hello"))
+
+        assert built, "no ClientSession was constructed"
+        headers = built[0].get("headers") or {}
+        assert headers.get(_BRIDGE_TOKEN_HEADER) == token
+
+    def test_reuses_the_token_the_gateway_already_wrote(self, tmp_path):
+        """It must read the existing token, never mint a competing one.
+
+        A second token would authenticate against nothing: the running bridge
+        was started with the first.
+        """
+        from plugins.platforms.whatsapp.adapter import (
+            _BRIDGE_TOKEN_HEADER,
+            _BRIDGE_TOKEN_NAME,
+        )
+
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        (session_dir / _BRIDGE_TOKEN_NAME).write_text("gateway-wrote-this", encoding="utf-8")
+        pconfig = SimpleNamespace(
+            token="", extra={"bridge_port": 3000, "session_path": str(session_dir)}
+        )
+
+        factory, built = self._capture_session()
+        with patch("aiohttp.ClientSession", side_effect=factory):
+            asyncio.run(_standalone_send(pconfig, "12345", "hello"))
+
+        assert built[0]["headers"][_BRIDGE_TOKEN_HEADER] == "gateway-wrote-this"
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"), reason="requires AF_UNIX"
+    )
+    def test_uses_the_unix_socket_transport_when_available(self, tmp_path):
+        """Same transport decision as the gateway, or the two disagree about
+        where the bridge lives and the cron path talks to a port nobody serves.
+        """
+        session_dir = tmp_path / "session"
+        session_dir.mkdir()
+        pconfig = SimpleNamespace(
+            token="", extra={"bridge_port": 3000, "session_path": str(session_dir)}
+        )
+
+        factory, built = self._capture_session()
+        with patch("aiohttp.ClientSession", side_effect=factory):
+            asyncio.run(_standalone_send(pconfig, "12345", "hello"))
+
+        assert "connector" in built[0], "expected a unix-socket connector"
+
+    def test_derives_the_session_path_without_a_config_key(self, tmp_path, monkeypatch):
+        """``extra`` has no session_path in the common case — it resolves the
+        same way WhatsAppAdapter.__init__ does, so no new config key is needed
+        (and a stale one could point the socket somewhere else).
+        """
+        from plugins.platforms.whatsapp.adapter import _BRIDGE_TOKEN_NAME
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        pconfig = SimpleNamespace(token="", extra={"bridge_port": 3000})
+
+        factory, built = self._capture_session()
+        with patch("aiohttp.ClientSession", side_effect=factory):
+            asyncio.run(_standalone_send(pconfig, "12345", "hello"))
+
+        written = list((tmp_path / "hermes").rglob(_BRIDGE_TOKEN_NAME))
+        assert written, "the token should resolve under the active HERMES_HOME"
