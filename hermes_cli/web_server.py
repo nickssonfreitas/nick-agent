@@ -43,6 +43,8 @@ import urllib.parse
 import zipfile
 
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
+from hermes_cli.dashboard_csp import build_dashboard_csp, csp_header_name
+from hermes_cli.provider_probe import METADATA_BLOCKED_MESSAGE, blocks_provider_probe
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -714,39 +716,6 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
-# Report-Only by default; set HERMES_CSP_ENFORCE=1 to enforce. Report-Only lets
-# a deployment collect violation reports (browser console / a report-uri) for a
-# full release cycle before the policy can break anything — the SPA still runs
-# unchanged while it reports.
-_CSP_ENFORCE = os.environ.get("HERMES_CSP_ENFORCE") == "1"
-
-
-def _build_dashboard_csp(nonce: str) -> str:
-    # script-src is nonce-only (no 'unsafe-inline'): the two inline bootstrap
-    #   <script> blocks in _serve_index carry this nonce; dashboard plugin JS
-    #   loads via <script src> from same-origin /dashboard-plugins, covered by
-    #   'self'.
-    # style-src keeps 'unsafe-inline': the built SPA injects theme <style> at
-    #   runtime (web/src/themes/context.tsx) with no nonce hook reachable from
-    #   the server. A CSP-L3 nonce would disable 'unsafe-inline' on modern
-    #   browsers anyway, so this costs nothing there and only aids a fallback.
-    # connect-src allows ws:/wss: for the same-origin PTY/console/event sockets.
-    return "; ".join([
-        "default-src 'none'",
-        f"script-src 'self' 'nonce-{nonce}'",
-        f"style-src 'self' 'nonce-{nonce}' 'unsafe-inline' https://fonts.googleapis.com",
-        "font-src 'self' data: https://fonts.gstatic.com",
-        "img-src 'self' data: blob: https:",
-        "media-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
-        "worker-src 'self' blob:",
-        "object-src 'none'",
-        "base-uri 'self'",
-        "form-action 'self'",
-        "frame-ancestors 'none'",
-    ])
-
-
 @app.middleware("http")
 async def _security_headers_middleware(request: Request, call_next):
     """Outermost middleware: mint a per-request CSP nonce and stamp security
@@ -761,10 +730,7 @@ async def _security_headers_middleware(request: Request, call_next):
     nonce = secrets.token_urlsafe(16)
     request.state.csp_nonce = nonce
     response = await call_next(request)
-    header = (
-        "Content-Security-Policy" if _CSP_ENFORCE else "Content-Security-Policy-Report-Only"
-    )
-    response.headers.setdefault(header, _build_dashboard_csp(nonce))
+    response.headers.setdefault(csp_header_name(), build_dashboard_csp(nonce))
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -7588,22 +7554,12 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
 
     url = base_url + "/models"
 
-    # Piso de SSRF. A URL e inteiramente controlada por quem chama, porque essa
-    # e a feature: apontar para um endpoint OpenAI-compativel qualquer. O gate
-    # de auth do dashboard ja cobre o acesso (bind nao-loopback sempre exige
-    # OAuth ou senha), mas um operador autenticado ainda podia usar este
-    # endpoint para fazer o servidor buscar 169.254.169.254.
-    #
-    # Usa is_always_blocked_url e NAO is_safe_url de proposito: LLM local e
-    # caso de uso de primeira classe aqui (Ollama em 127.0.0.1:11434, LM
-    # Studio), entao bloquear loopback e RFC1918 quebraria a feature. O piso
-    # so barra os enderecos de metadata de nuvem, que nunca sao alvo legitimo.
-    from tools.url_safety import is_always_blocked_url
-
-    if is_always_blocked_url(url):
+    # SSRF floor — see hermes_cli/provider_probe for why this blocks only
+    # cloud metadata and not every private address.
+    if blocks_provider_probe(url):
         return {
             "ok": False, "reachable": False,
-            "message": "Blocked: cloud metadata endpoints are not valid providers.",
+            "message": METADATA_BLOCKED_MESSAGE,
             "models": [],
         }
 
@@ -7648,14 +7604,10 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
-        # Mesmo piso de SSRF do /custom-endpoints/validate acima: so os
-        # enderecos de metadata de nuvem, para nao quebrar LLM local.
-        from tools.url_safety import is_always_blocked_url
-
-        if is_always_blocked_url(url):
+        if blocks_provider_probe(url):
             return {
                 "ok": False, "reachable": False,
-                "message": "Blocked: cloud metadata endpoints are not valid providers.",
+                "message": METADATA_BLOCKED_MESSAGE,
             }
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
