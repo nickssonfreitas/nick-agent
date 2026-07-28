@@ -912,3 +912,71 @@ hide that anything happened.
 `session_retention.py:57` (`generic-api-key`). It is in the scan's own source
 snapshot under `/tmp`, so it is a worktree-state finding, not a committed
 secret — untriaged as of this run.
+
+---
+
+## 12. Prompt injection — scoped, not closed
+
+Carried through sections 10 and 11 as "the thing none of this touches". This
+section says what it actually is, because repeating "we did not fix it" without
+saying what "it" is has no value to the next reader.
+
+**It is not closable by a guard, and the exfiltration-path framing is a trap.**
+`_HERMES_CORE_TOOLS` in `toolsets.py` includes `terminal` and `execute_code`.
+Once those are in the schema, cataloguing outbound paths and hardening each one
+is theatre: an injected instruction does not need the media-delivery route or a
+logging sink, it runs `curl`. The denylist fix in section 10 and the CWE-117 fix
+in section 11 are worth having, but they are narrow — they matter on surfaces
+that do **not** carry `terminal`, and nowhere else.
+
+### The asymmetry worth naming
+
+The repo already reasoned about this once, for webhooks:
+
+> Webhook events may originate from untrusted third-party content (for example,
+> public PR titles/comments). Keep the default webhook toolset intentionally
+> constrained to avoid local file/system execution by prompt injection.
+
+`hermes-webhook` therefore gets four tools and no `terminal`. **Every messaging
+platform gets the full core set** — telegram, whatsapp, discord, slack, signal,
+email, sms, matrix, and twelve more, all `_HERMES_CORE_TOOLS`.
+
+That is a deliberate posture, not an oversight; the descriptions say so ("full
+access for personal use", "personal messaging, more trusted"), and the gateway
+gates *senders* through allowlists (`WHATSAPP_ALLOWED_USERS`, `dm_policy`,
+`group_policy`).
+
+The gap is that the two paths defend different things. The webhook toolset
+defends against untrusted **content**. The messaging allowlists defend against
+untrusted **senders**. Untrusted content reaches a terminal-capable session
+without ever passing a sender check:
+
+- `web_extract` and `browser_*` pull an arbitrary page into the context of a
+  session that holds `terminal`.
+- `hermes-email` bodies are third-party content by definition; the sender
+  allowlist authenticates the envelope, not the quoted thread inside it.
+- An allowlisted contact forwarding a message carries someone else's text.
+
+### Why the obvious mitigation is architecturally blocked
+
+The natural answer — downgrade the toolset once untrusted content enters the
+context — collides head-on with the project's own non-negotiable:
+
+> Never mutate past context, swap toolsets, or rebuild the system prompt
+> mid-conversation (context compression is the sole exception).
+
+A dynamic downgrade *is* a mid-conversation toolset swap. So it cannot be built
+without either breaking prompt caching or restructuring how a tainted turn is
+handled (for example, routing the fetch into a separate sub-agent whose result
+returns as data rather than as context — `delegate_task` already has that
+shape). That is a design decision, not a patch, and it is not one to take
+unilaterally.
+
+### What this section does and does not claim
+
+Verified by reading `toolsets.py`: the toolset assignment table above, and that
+`hermes-webhook` is the only messaging-adjacent surface with a constrained set.
+**Not** attempted: an end-to-end injection exercise, a taint analysis of what
+actually reaches the model on each surface, or any change to the toolsets. The
+honest status is that the risk is now described precisely enough to decide
+about, and undecided.
