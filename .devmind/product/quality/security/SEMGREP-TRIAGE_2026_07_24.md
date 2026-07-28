@@ -906,12 +906,29 @@ netloc, which is the malformed case these sinks handle. A local
 attempt stays visible to whoever reads the log — deleting the newline would
 hide that anything happened.
 
-### Note for the next run
+### `gitleaks-worktree` (1) — false positive
 
-`gitleaks-worktree` reports 1 finding against
-`session_retention.py:57` (`generic-api-key`). It is in the scan's own source
-snapshot under `/tmp`, so it is a worktree-state finding, not a committed
-secret — untriaged as of this run.
+`session_retention.py:57`, rule `generic-api-key`, entropy 3.77. The flagged
+line is
+
+```python
+POLICY_LOGGED_KEY = "retention_policy_logged_v1"
+```
+
+which is the *name* of a SQLite metadata key, not a value of one. It sits in a
+block of five sibling constants (`POLICY_SINCE_KEY`, `POLICY_SHIELD_KEY`,
+`POLICY_NOTICE_KEY`, `LAST_PRUNE_KEY`) that name rows in the session store's
+metadata table. Nothing is authenticated with it.
+
+What tripped the rule is the shape rather than the content: a `*_KEY` identifier
+assigned a longish underscore-and-digit string clears the entropy floor. That
+also explains why it appears under `gitleaks-worktree` and not
+`gitleaks-git` — same file either way; the worktree pass simply reports the
+current bytes.
+
+Recorded rather than suppressed. An `.gitleaksignore` entry would cost more than
+it saves here: one line of prose in this file prevents the re-litigation, while a
+suppression rule is a thing that outlives its reason and quietly widens.
 
 ---
 
