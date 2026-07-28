@@ -90,3 +90,81 @@ assertion, restated in the GitHub Advisory DB; it was not independently
 confirmed against the 8.3.0 patch diff. Re-triage before ignoreUntil.
 """
 ignoreUntil = 2026-10-24
+
+[[IgnoredVulns]]
+id = "GHSA-xq8w-9jvx-gm3v" # hermes-agent itself — CVE-2026-10221 (prompt injection via compaction focus)
+reason = """
+Not a dependency: this advisory targets hermes-agent <= 0.19.0, and this repo
+IS hermes-agent 0.19.0 (pyproject.toml:10). osv-scanner sees the self-reference
+in uv.lock. There is no "upgrade" available — the advisory lists no fixed
+version, and it records that NousResearch was contacted and did not respond.
+
+FIXED HERE, in commit 44d22ee39. The advisory names `_compress_context` in
+run_agent.py, which is a forwarder into
+agent/context_compressor.py::_generate_summary. The focus string was
+interpolated raw between quotes at the end of the summarizer prompt — a
+position chosen deliberately so it "takes precedence". The in-code comment
+claimed the value came from a manual `/compress <focus>`, but that only holds
+when a manual focus is given: otherwise the caller falls back to
+`_derive_auto_focus_topic()`, which lifts text out of the most recent user
+turns. On a gateway those turns are attacker-reachable, so a payload could
+close the quote and address the summarizer directly — and the resulting
+summary is re-injected into the agent's own context, so the injection would
+persist for the rest of the conversation.
+
+The fix applies the treatment the memory-provider block twenty lines above
+already had: escape &, < and >, fence the value in <focus-topic>, and tell the
+summarizer to read it as a topic description rather than instructions.
+
+Residual uncertainty, stated honestly: this is defense in depth, not a hard
+guarantee. The fence removes the structural break-out (a payload can no longer
+forge a real closing tag — regression-tested), and the framing reduces the
+semantic pull, but text inside a fence is still text a model reads. No public
+PoC was obtained; the analysis is advisory text plus code reading. The sources
+also disagree on severity: the OSV table reports 7.3, the GitHub Advisory page
+5.5.
+
+What closes it: upstream publishing a patched hermes-agent release and this
+fork bumping its version, or the advisory gaining a fixed-version range. Until
+then the finding matches on version alone and cannot be cleared by fixing code.
+"""
+ignoreUntil = 2027-01-24
+
+[[IgnoredVulns]]
+id = "GHSA-pmqc-57g8-c22c" # hermes-agent itself — CVE-2026-10224 (webhook resource consumption)
+reason = """
+Same self-reference as the entry above: the advisory targets hermes-agent
+<= 0.19.0 and no fixed version exists.
+
+Deferred after reading the code, and the first read was WRONG. A search for the
+path the advisory names (gateway/platforms/feishu.py) finds nothing, which
+looks like "not applicable" — but Feishu was moved to a plugin, not removed.
+`_handle_webhook_request` is alive at
+plugins/platforms/feishu/adapter.py:3500. Do not re-derive this entry from the
+filename; check the plugin.
+
+The deferral rests on the described vector being already mitigated at that
+handler, not on the code being absent. CWE-400 is uncontrolled resource
+consumption reachable remotely; every gate below runs BEFORE any parsing:
+
+  - per-(app_id, path, remote_ip) rate limit -> 429, with the tracking dict
+    itself capped to bound memory (_check_webhook_rate_limit, :3629)
+  - Content-Type allowlist -> 415
+  - Content-Length rejected early against a 1 MB cap
+    (_FEISHU_WEBHOOK_MAX_BODY_BYTES, :223) -> 413
+  - bounded body read that raises past the same cap
+    (_read_limited_feishu_webhook_body, :246) -> 413, so a lying or absent
+    Content-Length does not help
+  - 30s read timeout (_FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, :227) -> 408,
+    which closes the slowloris shape
+  - per-IP anomaly recording on every rejection path
+
+Residual uncertainty: without the public PoC it cannot be confirmed that the
+disclosed vector is one of the shapes above rather than a different exhaustion
+path (for example downstream of parsing, in event dispatch). The gates cover
+the request-level shapes; a reviewer revisiting this should look past
+_handle_webhook_request into the event handlers it calls.
+
+What closes it: same as above — an upstream release with a fixed-version range.
+"""
+ignoreUntil = 2027-01-24
