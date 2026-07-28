@@ -5,7 +5,7 @@ description: Why the profile-creation experience belongs to the dashboard and th
 resource: web/
 tags: [decisions, profiles, dashboard, cli]
 status: stable
-decision_status: proposed
+decision_status: accepted
 deciders: [human:nickssonfreitas]
 sources:
   - id: repo
@@ -23,7 +23,13 @@ stale_after: 2026-10-28
 # 0001. Profile Builder — Dashboard-Native, Full-Featured Profile Creation
 
 Supersedes PR #31781, which added a prompt_toolkit `hermes profile wizard`.
-Lifecycle state is in this page's `decision_status` frontmatter, not here.
+
+## Outcome
+
+**Shipped.** The dashboard owns profile creation: `web/src/pages/ProfileBuilderPage.tsx`
+and `web/src/pages/ProfilesPage.tsx`, with `ProfileSwitcher`, `ProfileProvider` and
+`ProfileScopeBanner` around it. The text below is the original proposal, kept for the
+reasoning that rejected the CLI wizard; read it as history, not as a plan.
 
 ## Why this, not the CLI wizard
 

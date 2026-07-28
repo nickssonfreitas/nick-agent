@@ -21,7 +21,7 @@ its replacement, because the rejected path is half the value of the record.
 
 # The log
 
-* [0001. Build profile creation in the dashboard, not the CLI](0001-profile-builder-in-dashboard.md) - Why profile creation belongs to the dashboard and the prompt_toolkit wizard was turned down.
+* [0001. Build profile creation in the dashboard, not the CLI](0001-profile-builder-in-dashboard.md) - Why profile creation belongs to the dashboard and the prompt_toolkit wizard was turned down. Shipped.
 * [0002. Keep Telegram streamed replies going past the first overflow chunk](0002-telegram-overflow-continuations.md) - The fix for streamed Telegram replies dying after the first overflow chunk.
-* [0003. Expose an OpenAI-compatible API server](0003-openai-compatible-api-server.md) - Serving the agent behind an OpenAI-compatible HTTP surface, and what that commits us to.
-* [0004. Support streaming LLM responses](0004-streaming-response-support.md) - Streaming model output through the loop to each surface, including the cost to the prompt-cache invariant.
+* [0003. Expose an OpenAI-compatible API server](0003-openai-compatible-api-server.md) - Serving the agent behind an OpenAI-compatible HTTP surface. Shipped, and wider than proposed.
+* [0004. Support streaming LLM responses](0004-streaming-response-support.md) - Streaming model output through the loop to each surface. Shipped, opt-in, off by default.

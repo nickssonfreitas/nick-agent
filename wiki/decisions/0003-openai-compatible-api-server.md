@@ -5,7 +5,7 @@ description: The design for serving the agent behind an OpenAI-compatible HTTP s
 resource: gateway/platforms/api_server.py
 tags: [decisions, api, gateway, compatibility]
 status: stable
-decision_status: proposed
+decision_status: accepted
 deciders: [human:nickssonfreitas]
 sources:
   - id: repo
@@ -21,6 +21,16 @@ verified:
 stale_after: 2026-10-28
 ---
 # 0003. OpenAI-Compatible API Server for Hermes Agent
+
+## Outcome
+
+**Shipped, and wider than proposed.** `gateway/platforms/api_server.py` serves the two
+endpoints this plan asked for (`/v1/chat/completions`, `/v1/models`) plus `/v1/responses`
+with `previous_response_id` continuity, `/v1/capabilities`, and an async `/v1/runs`
+surface. Session continuity arrived as the `X-Hermes-Session-Id` and
+`X-Hermes-Session-Key` headers. The server stays off unless `API_SERVER_ENABLED=true`
+and refuses to start without a strong `API_SERVER_KEY`; see
+[Hardened VPS deployment](../operations/vps-deployment.md) before exposing it.
 
 ## Motivation
 

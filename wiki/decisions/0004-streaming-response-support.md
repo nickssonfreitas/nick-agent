@@ -5,7 +5,7 @@ description: The design for streaming model output through the agent loop and ou
 resource: run_agent.py
 tags: [decisions, streaming, agent-loop, surfaces]
 status: stable
-decision_status: proposed
+decision_status: accepted
 deciders: [human:nickssonfreitas]
 sources:
   - id: repo
@@ -21,6 +21,14 @@ verified:
 stale_after: 2026-10-28
 ---
 # 0004. Streaming LLM Response Support for Hermes Agent
+
+## Outcome
+
+**Shipped, opt-in as designed.** The streaming path lives in `run_agent.py` (including
+`_is_provider_stream_parse_error`, which absorbs malformed streaming data from
+Anthropic-compatible providers) and is configured through the `streaming:` block in
+`config.yaml` — off by default, documented in `cli-config.yaml.example` as enabling the
+streaming UX on Telegram, Discord and Slack.
 
 ## Overview
 
