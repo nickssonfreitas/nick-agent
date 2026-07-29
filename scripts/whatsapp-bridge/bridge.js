@@ -6,17 +6,35 @@
  * and exposes HTTP endpoints for the Python gateway adapter.
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
- *   GET  /messages       - Long-poll for new incoming messages
+ *   GET  /messages       - Long-poll for new incoming messages. Destructive
+ *                          (drains the queue) and therefore requires the
+ *                          X-Hermes-Bridge header, which forces a browser to
+ *                          preflight instead of hitting it as a simple GET.
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
- *   GET  /health         - Health check
+ *   GET  /health         - Health check. Unauthenticated (it is the bootstrap),
+ *                          and with `?nonce=` it returns `proof` =
+ *                          HMAC-SHA256(token, nonce) so a caller can verify
+ *                          this bridge is theirs before sending it anything.
+ *
+ * Transport and auth:
+ *   With --socket the bridge binds a unix domain socket (0600, in a 0700
+ *   session directory) instead of the TCP port, so no other local user can
+ *   reach it. Windows has no usable file-backed AF_UNIX, so the gateway omits
+ *   --socket there and loopback TCP carries instead. On both transports, every
+ *   route except /health requires the X-Hermes-Bridge-Token header when
+ *   <session>/bridge.token exists. Neither control has anything to do with
+ *   prompt injection: an injected request comes from the legitimate gateway,
+ *   which holds the socket and the token.
  *
  * Usage:
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
+ *   node bridge.js --socket ~/.hermes/whatsapp/session/bridge.sock \
+ *                  --session ~/.hermes/whatsapp/session
  */
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
@@ -24,7 +42,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, chmodSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -44,6 +62,12 @@ import {
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
+import {
+  POLL_HEADER,
+  drainNeedsHeader,
+  healthBody,
+  requestIsUnauthorized,
+} from './bridge_auth.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -99,6 +123,26 @@ try {
     .digest('hex')
     .slice(0, 16);
 } catch {}
+// Local IPC transport. With --socket the bridge binds a unix domain socket
+// INSTEAD of the TCP port, and the socket's 0600 mode inside a 0700 session
+// directory is what keeps other users out. The gateway omits --socket on
+// Windows (file-backed AF_UNIX is unreliable across builds — the same call is
+// made in tools/code_execution_tool.py), where loopback TCP plus the token
+// below is the fallback.
+const SOCKET_PATH = getArg('socket', '');
+
+// Shared secret with the Python gateway, written by it at 0600 in the session
+// directory. Absent means the bridge runs unauthenticated, which is the old
+// behaviour and is what pairing and ad-hoc local runs get.
+let BRIDGE_TOKEN = '';
+try {
+  BRIDGE_TOKEN = readFileSync(path.join(SESSION_DIR, 'bridge.token'), 'utf8').trim();
+} catch {
+  // No token file: stay unauthenticated rather than refusing to boot. A bridge
+  // that will not start is indistinguishable, to the user, from a broken
+  // install, and this path has to keep working for `--pair-only`.
+}
+
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
@@ -801,8 +845,42 @@ app.use((req, res, next) => {
   next();
 });
 
-// Poll for new messages (long-poll style)
+// Token gate. Only load-bearing on the TCP transport (Windows), where any
+// local process can connect; over the unix socket the filesystem already
+// decided who may speak. Mounted for both so the transports cannot drift.
+// The decision itself lives in bridge_auth.js so it is testable — this file
+// connects to WhatsApp at import, so no test can load it.
+app.use((req, res, next) => {
+  if (requestIsUnauthorized(req.path, req.headers, BRIDGE_TOKEN)) {
+    return res.status(401).json({ error: 'Invalid or missing bridge token.' });
+  }
+  next();
+});
+
+// Poll for new messages (long-poll style).
+//
+// This drain is DESTRUCTIVE: the splice empties the queue, so whoever calls it
+// takes ownership of those messages and nobody else ever sees them. That makes
+// it reachable-and-harmful from a browser in a way the write routes are not.
+// The Host check above stops DNS rebinding (an attacker *hostname* pointed at
+// 127.0.0.1) but not a page on any origin doing
+// `<img src="http://127.0.0.1:3000/messages">` — that sends `Host: 127.0.0.1:3000`,
+// which is on the allowlist. CORS then blocks the attacker from *reading* the
+// response, but the splice has already run: inbound WhatsApp messages are gone
+// before the gateway ever polls, silently and permanently.
+//
+// The write routes escape this only because `express.json()` is the sole body
+// parser, so they need `Content-Type: application/json`, which is not a CORS
+// simple type and therefore forces a preflight. This header requirement gives
+// the drain the same property: a custom request header triggers a preflight
+// OPTIONS, the bridge answers it without CORS headers, and the browser never
+// issues the real GET. A non-browser client on this host is unaffected.
 app.get('/messages', (req, res) => {
+  if (drainNeedsHeader(req.headers)) {
+    return res.status(403).json({
+      error: `Missing ${POLL_HEADER} header. The message drain is destructive and rejects simple cross-origin requests.`,
+    });
+  }
   const msgs = messageQueue.splice(0, messageQueue.length);
   res.json(msgs);
 });
@@ -1068,13 +1146,25 @@ app.get('/chat/:id', async (req, res) => {
 });
 
 // Health check
+// /health stays unauthenticated: it is the bootstrap, and the gateway has to
+// be able to ask "is anyone there" before it knows whether to trust the answer.
+//
+// What it now also does is prove *our* identity to the caller. The old
+// handshake let the gateway adopt any running bridge whose `scriptHash`
+// matched, but that hash is sha256 of a world-readable file in the install
+// tree, so any local user could compute it and be adopted — inheriting the
+// message stream in both directions. With `?nonce=` the caller learns whether
+// the responder holds the shared token, without sending the token to a peer it
+// has not verified yet. No token configured means no `proof` field, which is
+// the pre-token behaviour.
 app.get('/health', (req, res) => {
-  res.json({
+  const body = {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
-  });
+  };
+  res.json(healthBody(body, BRIDGE_TOKEN, req.query?.nonce));
 });
 
 // Start
@@ -1095,8 +1185,59 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
-    console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
+  // Transport selection. A unix socket removes the TCP listener entirely, so
+  // there is no port for another local process to squat and no loopback
+  // endpoint for a browser to reach.
+  const listenArgs = SOCKET_PATH ? [SOCKET_PATH] : [PORT, '127.0.0.1'];
+  if (SOCKET_PATH) {
+    // A unix socket outlives its process, so a previous crash leaves a file
+    // that makes bind() fail with EADDRINUSE. The gateway already unlinks
+    // before spawning us; this covers a bridge started by hand.
+    try {
+      unlinkSync(SOCKET_PATH);
+    } catch {
+      // Nothing to remove, which is the normal case.
+    }
+    // Remove the socket on the way out so the next start is clean. Best-effort
+    // by nature: SIGKILL runs no handler, which is why the unlink above exists.
+    const cleanupSocket = () => {
+      try {
+        unlinkSync(SOCKET_PATH);
+      } catch {}
+    };
+    process.on('exit', cleanupSocket);
+    // Signals need explicit handlers because Node's default termination does
+    // not run 'exit' listeners. Each one unlinks, then re-raises the same
+    // signal at itself with the listener removed, so the process still dies
+    // *by that signal*. Calling process.exit(0) here instead would report a
+    // clean exit for what was really a SIGTERM, and the Python side classifies
+    // a bridge exit by exactly that code (_check_managed_bridge_exit treats
+    // 0 / -2 / -15 differently depending on whether a shutdown is in progress).
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      const handler = () => {
+        cleanupSocket();
+        process.removeListener(sig, handler);
+        process.kill(process.pid, sig);
+      };
+      process.on(sig, handler);
+    }
+  }
+  app.listen(...listenArgs, () => {
+    if (SOCKET_PATH) {
+      // Narrow the socket to owner-only. The real control is the session
+      // directory being 0700 (the gateway enforces that before spawning us),
+      // which also closes the window between bind and this chmod — inside a
+      // 0700 directory nobody else can reach the socket even for that instant.
+      try {
+        chmodSync(SOCKET_PATH, 0o600);
+      } catch (err) {
+        console.error(`⚠ Could not chmod the bridge socket: ${err?.message || err}`);
+      }
+      console.log(`🌉 WhatsApp bridge listening on ${SOCKET_PATH} (mode: ${WHATSAPP_MODE})`);
+    } else {
+      console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
+    }
+    console.log(`🔐 Bridge token: ${BRIDGE_TOKEN ? 'enabled' : 'not configured (unauthenticated)'}`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);

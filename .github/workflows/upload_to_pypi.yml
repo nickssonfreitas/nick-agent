@@ -2,6 +2,13 @@ name: Publish to PyPI
 
 # Triggered by CalVer tag pushes from scripts/release.py (e.g. v2026.5.15)
 # Can also be triggered manually from the Actions tab as an escape hatch.
+#
+# checkov:skip=CKV_GHA_7:O escape hatch manual exige a tag alvo, e o input nao
+# alcanca nenhum bloco run: — chega em `ref:` do checkout e, na validacao, via
+# `env: CONFIRM_TAG`, nunca interpolado no texto do script. A tag e verificada
+# com `git tag -l` antes de qualquer build ou publish, e disparar o workflow ja
+# exige write no repo (quem tem isso pode empurrar uma tag de qualquer jeito).
+# Zerar os inputs so removeria o escape hatch, sem fechar vetor algum.
 on:
   push:
     tags:
@@ -37,9 +44,15 @@ jobs:
 
       - name: Validate tag exists
         if: github.event_name == 'workflow_dispatch'
+        # confirm_tag is a free-form workflow_dispatch input — the one value
+        # here an operator fully controls. Interpolating it into the script
+        # text would let a crafted tag name close the quote and run commands
+        # on a runner that publishes to PyPI. Via env it stays a plain string.
+        env:
+          CONFIRM_TAG: ${{ inputs.confirm_tag }}
         run: |
-          if ! git tag -l "${{ inputs.confirm_tag }}" | grep -q .; then
-            echo "::error::Tag '${{ inputs.confirm_tag }}' does not exist in the repo"
+          if ! git tag -l "$CONFIRM_TAG" | grep -q .; then
+            echo "::error::Tag '$CONFIRM_TAG' does not exist in the repo"
             exit 1
           fi
 

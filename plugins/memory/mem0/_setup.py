@@ -209,6 +209,16 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
             new_lines.append(f"{k}={v}")
 
     env_path.write_text("\n".join(new_lines) + "\n")
+    # Este arquivo guarda chave de API. `write_text` preserva o modo de um
+    # arquivo que ja existe, mas ao CRIAR usa 0o666 & ~umask — num umask 002,
+    # comum em desktop Debian/Ubuntu, o .env nasce 0o664: legivel por todos e
+    # gravavel pelo grupo. Hoje ~/.hermes e 0o700 e barra o acesso, entao isto
+    # e defesa em profundidade, e alinha com o mode=0o600 que este plugin ja
+    # usa em atomic_json_write (CodeQL py/clear-text-storage-sensitive-data).
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:

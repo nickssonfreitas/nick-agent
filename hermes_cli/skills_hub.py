@@ -1399,8 +1399,15 @@ def do_repair_official(name: str, restore: bool = False,
             pass
 
 
-def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
-    """Manage taps (custom GitHub repo sources)."""
+def do_tap(action: str, repo: str = "", path: str = "",
+           console: Optional[Console] = None) -> None:
+    """Manage taps (custom GitHub repo sources).
+
+    ``path`` is the in-repo directory holding the skill folders. It matters
+    because the tap scanner lists directories at exactly one level — a repo
+    that nests its skills by category (``skills/engineering/<name>/``) needs
+    the category path, not the ``skills/`` default, or the tap finds nothing.
+    """
     from tools.skills_hub import TapsManager
 
     c = console or _console
@@ -1422,10 +1429,13 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
 
     elif action == "add":
         if not repo:
-            c.print("[bold red]Error:[/] Repo required. Usage: hermes skills tap add owner/repo\n")
+            c.print("[bold red]Error:[/] Repo required. "
+                    "Usage: hermes skills tap add owner/repo [--path skills/sub/]\n")
             return
-        if mgr.add(repo):
-            c.print(f"[bold green]Added tap:[/] {repo}\n")
+        added = mgr.add(repo, path) if path else mgr.add(repo)
+        if added:
+            suffix = f" [dim]({path})[/]" if path else ""
+            c.print(f"[bold green]Added tap:[/] {repo}{suffix}\n")
         else:
             c.print(f"[yellow]Tap already exists:[/] {repo}\n")
 
@@ -1764,7 +1774,7 @@ def skills_command(args) -> None:
         if not tap_action:
             _console.print("Usage: hermes skills tap [list|add|remove]\n")
             return
-        do_tap(tap_action, repo=repo)
+        do_tap(tap_action, repo=repo, path=getattr(args, "path", "") or "")
     else:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
@@ -1980,7 +1990,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         tap_action = args[0]
         repo = args[1] if len(args) > 1 else ""
-        do_tap(tap_action, repo=repo, console=c)
+        # /skills tap add owner/repo [path] — positional, since the slash
+        # command surface takes bare tokens rather than argparse flags.
+        path = args[2] if len(args) > 2 else ""
+        do_tap(tap_action, repo=repo, path=path, console=c)
 
     elif action in {"help", "--help", "-h"}:
         _print_skills_help(c)

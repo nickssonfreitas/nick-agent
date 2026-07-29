@@ -1,0 +1,1 @@
+Moved to [`wiki/research/0004-security-remediation-2026-07-23.md`](../../../../wiki/research/0004-security-remediation-2026-07-23.md) in the 2026-07-28 wiki migration. This file is a pointer; edit the wiki page.

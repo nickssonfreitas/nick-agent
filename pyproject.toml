@@ -17,7 +17,17 @@ readme = "README.md"
 # wheel yet and fall back to a maturin source build that fails. Capping at
 # <3.14 makes uv refuse 3.14 with a clear error instead of attempting that
 # build. Raise the ceiling once our Rust transitives ship cp314 wheels.
-requires-python = ">=3.11,<3.14"
+#
+# O piso e 3.11.4, nao 3.11, por seguranca e nao por API. `agent/curator_backup.py`
+# extrai o snapshot de skills com `tarfile.extractall(..., filter="data")` e cai
+# num `extractall` sem filtro no `except TypeError` para interpretadores antigos.
+# O `filter=` do PEP 706 chegou no 3.12 mas foi retroportado para o 3.11.4, entao
+# a janela real sem filtro e so 3.11.0-3.11.3. Nessa faixa a checagem manual que
+# roda antes (rejeita path absoluto e `..`) nao cobre membros symlink, que e o
+# vetor que o `filter="data"` fecha. Subir o piso elimina a faixa em vez de
+# duplicar a logica do filtro. O CI ja usa `uv python install 3.11`, que resolve
+# para o 3.11.x mais recente, entao nada muda na pratica.
+requires-python = ">=3.11.4,<3.14"
 authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -51,6 +61,16 @@ dependencies = [
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
+  # Hardened XML parsing for untrusted input. Sits in core, not an extra, on
+  # purpose — worth saying why, since the scope rule above says "only packages
+  # used by EVERY session". That rule exists to bound supply-chain blast
+  # radius, and defusedxml does not move that needle: zero transitive
+  # dependencies, 71 KB, a pure-stdlib wrapper. Keeping it in [wecom] made the
+  # guard in tools/read_extract.py (a CORE tool — it backs read_file for
+  # .docx/.xlsx) conditional on an unrelated messaging extra being installed,
+  # which is the wrong shape for a security default. See
+  # wiki/research/0007-bandit-triage-2026-07-25.md (BND-001).
+  "defusedxml==0.7.1",
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
@@ -89,7 +109,7 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==46.0.7",  # CVE-2026-39892, CVE-2026-34073
+  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf (bundled OpenSSL)
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -127,7 +147,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",  # PYSEC-2026-2253..2257, PYSEC-2026-3451 (20 image-parsing advisories)
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -161,17 +181,18 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+dev = ["debugpy==1.8.20", "pytest==9.0.3", "pytest-asyncio==1.3.0", "pytest-cov==7.0.0", "coverage[toml]==7.11.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710 + PYSEC-2026-248/249/2280/2281; mcp: PYSEC-2026-3481/3482/3483; pytest: PYSEC-2026-1845; setuptools: PYSEC-2026-3447 NOT fixed — 83.0.0 breaks torch >=2.11 (caps setuptools<82), sdist-build-time only
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
 matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
-# WeCom-controlled callback endpoints, so we use defusedxml (drop-in
-# replacement for stdlib xml.etree.ElementTree) to block billion-laughs
-# and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
-# here to keep the dependency local to wecom_callback's threat model.
-wecom = ["defusedxml==0.7.1"]
+# WeCom-controlled callback endpoints with defusedxml (drop-in replacement for
+# stdlib xml.etree.ElementTree) to block billion-laughs and XXE. defusedxml
+# moved to core on 2026-07-26: the same guard is needed by tools/read_extract.py
+# for user-supplied .docx/.xlsx, and scoping it to a messaging extra left a core
+# tool hardened only by accident of install. Extra kept for back-compat.
+wecom = []
 cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
@@ -208,7 +229,7 @@ vision = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710 + PYSEC-2026-248/249/2280/2281; mcp: PYSEC-2026-3481/3482/3483 (session hijack via unverified session id)
 nemo-relay = ["nemo-relay>=0.5,<1.0"]
 homeassistant = ["aiohttp==3.14.1"]
 sms = ["aiohttp==3.14.1"]
@@ -217,7 +238,7 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710 + PYSEC-2026-248/249/2280/2281; mcp: PYSEC-2026-3481/3482/3483
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -271,9 +292,14 @@ youtube = [
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-# starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
-# transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+# starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) plus PYSEC-2026-2280/2281
+# (HTTPEndpoint method confusion, StaticFiles UNC SSRF on Windows) and
+# PYSEC-2026-248/249 (request.url path injection, form limits not enforced).
+# fastapi pulls Starlette transitively (>=0.40.0, no upper bound) and pre-1.3.1
+# is the vulnerable range. See the mcp extra above.
+# python-multipart==0.0.31 fixes PYSEC-2026-3036/3037 (querystring separator
+# confusion) and PYSEC-2026-3040 (negative Content-Length → unbounded read).
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.31"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -369,6 +395,28 @@ markers = [
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"
+
+# Coverage is opt-in and local-only: `scripts/run_tests.sh <paths> --cov=gateway`.
+# CI does not pass --cov and there is no coverage gate, deliberately — a global
+# percentage says nothing about whether a given function is safe to refactor,
+# and the C tracer on the CI-pinned Python 3.11 costs 10-30% across a suite
+# whose slowest file already sits at 160s against a 300s timeout that retries.
+[tool.coverage.run]
+# One pytest subprocess per test file means one data file per test file;
+# run_tests_parallel.py gives each its own COVERAGE_FILE and combines afterwards.
+parallel = true
+# Statement coverage only. Branch tracing multiplies the 3.11 C-tracer cost for
+# little added signal on the question this tool exists to answer ("did this
+# closure run at all?").
+branch = false
+# Note on threads, since it is the obvious worry here: the gateway runs each
+# agent turn on a ThreadPoolExecutor, so the 1,300-line run_sync closure in
+# gateway/run.py executes off the main thread. No `concurrency` setting is
+# needed for that — coverage.py traces threading by default, and `concurrency`
+# is for the greenlet/eventlet/gevent families. Verified rather than assumed:
+# measured 317 covered lines inside run_sync (gateway/run.py:20326-21626) both
+# with and without concurrency = ["thread"], so the setting was dropped instead
+# of being carried with a justification that does not hold.
 
 [tool.ty.environment]
 python-version = "3.13"

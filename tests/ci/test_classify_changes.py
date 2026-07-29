@@ -62,6 +62,18 @@ CASES = {
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),
     "dockerfile → docker meta": (["Dockerfile"], _lanes(docker_meta=True)),
+    # The docker job is a required check only when docker_meta is true, so a
+    # compose or hadolint edit that fails to set it merges without ever being
+    # built. Both used to: docker-compose*.yml matched no prefix at all, and
+    # the tuple spelled the hadolint config ".hadolint.yml" while the tracked
+    # file is ".hadolint.yaml".
+    "compose → docker meta": (["docker-compose.yml"], _lanes(docker_meta=True)),
+    "windows compose → docker meta": (
+        ["docker-compose.windows.yml"],
+        _lanes(docker_meta=True),
+    ),
+    "hadolint config → docker meta": ([".hadolint.yaml"], _lanes(docker_meta=True)),
+    "docker dir → docker meta": (["docker/entrypoint.sh"], _lanes(docker_meta=True)),
     # Unknown top-level file keeps Python on rather than risk a silent skip.
     "unknown toplevel → python": (["Makefile"], _lanes(python=True)),
     "mixed docs+python → python": (["README.md", "agent/x.py"], _lanes(python=True, scan=True)),

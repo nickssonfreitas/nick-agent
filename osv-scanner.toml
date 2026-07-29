@@ -1,0 +1,170 @@
+# OSV-Scanner ignore/allowlist config — auto-detected by osv-scanner when it
+# runs from the repo root (no --config flag needed; verified locally with
+# osv-scanner v2.4.0 against uv.lock, package-lock.json and
+# website/package-lock.json). See .github/workflows/osv-scanner.yml, which
+# flips fail-on-vuln to true and relies on this file to keep already-deferred
+# CVEs from blocking every PR.
+#
+# Every entry below is a DEFERRAL, not a dismissal: each names the finding,
+# why it isn't fixed in this PR, and what closes it. Do not add an entry
+# without a reason a reviewer can act on, and do not use this file to hide a
+# finding no one has looked at — see the security/harden-gates-and-privacy
+# branch notes for the audit that produced this list (2026-07-24).
+#
+# `ignoreUntil` forces a future re-check: once that date passes, osv-scanner
+# stops filtering the entry and the gate goes red again until it's re-triaged
+# (either fixed, or the date is pushed out with a fresh reason).
+
+[[IgnoredVulns]]
+id = "GHSA-mrfv-m5wm-5w6w" # pynacl — CVE-2025-69277, PYSEC-2026-1448, PYSEC-2026-3002
+reason = """
+pynacl is held at 1.5.0 because discord.py's [voice] extra caps it there;
+bumping breaks the Discord voice integration. Documented pin, see commit
+6269bc3ba ("fix(deps): patch 6 vulnerable runtime deps flagged by
+osv-scanner"). Revisit when discord.py lifts the cap.
+"""
+ignoreUntil = 2027-01-24
+
+[[IgnoredVulns]]
+id = "GHSA-h35f-9h28-mq5c" # setuptools — CVE-2026-59890, PYSEC-2026-3447, BIT-setuptools-2026-59890
+reason = """
+setuptools is held at 81.0.0 because the fix (83.0.0) caps torch<2.11, which
+this project isn't ready to move to yet. Intentional pin documented in
+pyproject.toml and commit 6269bc3ba. Revisit alongside the next torch bump.
+"""
+ignoreUntil = 2027-01-24
+
+[[IgnoredVulns]]
+id = "GHSA-mh99-v99m-4gvg" # brace-expansion — CVE-2026-14257 (uncatchable OOM DoS)
+reason = """
+Partially fixed here: the top-level package-lock.json entry was bumped
+5.0.7 -> 5.0.8 (the patched release) as part of this change. What remains
+are transitive 1.1.16 and 2.1.2 copies nested under dev-only tooling
+(eslint, @eslint/*, @electron/asar, @electron/universal, glob, filelist,
+dir-compare, eslint-plugin-react) whose parents pin those majors.
+
+Every remaining instance is `dev: true` — verified by reading each entry in
+package-lock.json, not inferred. None reaches the published wheel, the
+Docker image or any running gateway/dashboard/API-server process; the worst
+case is a local `npm run build`/`npm test` being OOM-killed on hostile
+input, and the input here is this repo's own file globs.
+
+Closing it fully means waiting for the dev toolchain to move off the 1.x/2.x
+lines, which is not something this repo controls. Re-check at the date below.
+"""
+ignoreUntil = 2026-08-24
+
+[[IgnoredVulns]]
+id = "GHSA-qwww-vcr4-c8h2" # react-router — RSC mode CSRF bypass (affects >=7.12.0, <8.3.0)
+reason = """
+Deferred after a dedicated reachability review (2026-07-24), not on a hunch.
+
+Scope: react-router 7.18.0 arrives transitively via react-router-dom ^7.17.0,
+declared in BOTH web/package.json:37 and apps/desktop/package.json:111.
+
+This bundle DOES reach users — do not re-derive it as dev-only. It ships in
+the PyPI wheel (pyproject.toml:348 package-data `web_dist/**/*`, and
+.github/workflows/upload_to_pypi.yml:92 fails the release if the bundle is
+missing), in the Docker image (Dockerfile:200 builds it, :296 points
+HERMES_WEB_DIST at it), and in the Electron renderer.
+
+The deferral rests on the vulnerable path being unreachable, not on the
+package being absent. The advisory states it "only affects your application
+if you are using the unstable RSC APIs". Across 42 consuming files there is
+zero use of createBrowserRouter, createStaticHandler, createStaticRouter,
+RouterProvider or any react-router/server entry point; consumption is purely
+declarative (BrowserRouter in web/src/main.tsx, HashRouter in
+apps/desktop/src/main.tsx:8) plus hooks. There is no SSR entry, and the
+built bundle is served as static files by Python FastAPI
+(hermes_cli/web_server.py:18361) — there is no Node server able to execute
+the server actions the CSRF targets.
+
+Why it isn't simply patched: there is NO 7.x backport. The only fix is 8.3.0,
+a major bump that removes the react-router-dom package entirely (42 import
+specifiers to rewrite) and raises the peer floor to React 19.2.7+ and Node
+22.22+. That floor, not the routing call sites, is the real risk — verify it
+against the pinned node:22 digest at Dockerfile:9 before scoping the bump.
+
+Residual uncertainty, stated honestly: "RSC-only" is the upstream maintainer's
+assertion, restated in the GitHub Advisory DB; it was not independently
+confirmed against the 8.3.0 patch diff. Re-triage before ignoreUntil.
+"""
+ignoreUntil = 2026-10-24
+
+[[IgnoredVulns]]
+id = "GHSA-xq8w-9jvx-gm3v" # hermes-agent itself — CVE-2026-10221 (prompt injection via compaction focus)
+reason = """
+Not a dependency: this advisory targets hermes-agent <= 0.19.0, and this repo
+IS hermes-agent 0.19.0 (pyproject.toml:10). osv-scanner sees the self-reference
+in uv.lock. There is no "upgrade" available — the advisory lists no fixed
+version, and it records that NousResearch was contacted and did not respond.
+
+FIXED HERE, in commit 44d22ee39. The advisory names `_compress_context` in
+run_agent.py, which is a forwarder into
+agent/context_compressor.py::_generate_summary. The focus string was
+interpolated raw between quotes at the end of the summarizer prompt — a
+position chosen deliberately so it "takes precedence". The in-code comment
+claimed the value came from a manual `/compress <focus>`, but that only holds
+when a manual focus is given: otherwise the caller falls back to
+`_derive_auto_focus_topic()`, which lifts text out of the most recent user
+turns. On a gateway those turns are attacker-reachable, so a payload could
+close the quote and address the summarizer directly — and the resulting
+summary is re-injected into the agent's own context, so the injection would
+persist for the rest of the conversation.
+
+The fix applies the treatment the memory-provider block twenty lines above
+already had: escape &, < and >, fence the value in <focus-topic>, and tell the
+summarizer to read it as a topic description rather than instructions.
+
+Residual uncertainty, stated honestly: this is defense in depth, not a hard
+guarantee. The fence removes the structural break-out (a payload can no longer
+forge a real closing tag — regression-tested), and the framing reduces the
+semantic pull, but text inside a fence is still text a model reads. No public
+PoC was obtained; the analysis is advisory text plus code reading. The sources
+also disagree on severity: the OSV table reports 7.3, the GitHub Advisory page
+5.5.
+
+What closes it: upstream publishing a patched hermes-agent release and this
+fork bumping its version, or the advisory gaining a fixed-version range. Until
+then the finding matches on version alone and cannot be cleared by fixing code.
+"""
+ignoreUntil = 2027-01-24
+
+[[IgnoredVulns]]
+id = "GHSA-pmqc-57g8-c22c" # hermes-agent itself — CVE-2026-10224 (webhook resource consumption)
+reason = """
+Same self-reference as the entry above: the advisory targets hermes-agent
+<= 0.19.0 and no fixed version exists.
+
+Deferred after reading the code, and the first read was WRONG. A search for the
+path the advisory names (gateway/platforms/feishu.py) finds nothing, which
+looks like "not applicable" — but Feishu was moved to a plugin, not removed.
+`_handle_webhook_request` is alive at
+plugins/platforms/feishu/adapter.py:3500. Do not re-derive this entry from the
+filename; check the plugin.
+
+The deferral rests on the described vector being already mitigated at that
+handler, not on the code being absent. CWE-400 is uncontrolled resource
+consumption reachable remotely; every gate below runs BEFORE any parsing:
+
+  - per-(app_id, path, remote_ip) rate limit -> 429, with the tracking dict
+    itself capped to bound memory (_check_webhook_rate_limit, :3629)
+  - Content-Type allowlist -> 415
+  - Content-Length rejected early against a 1 MB cap
+    (_FEISHU_WEBHOOK_MAX_BODY_BYTES, :223) -> 413
+  - bounded body read that raises past the same cap
+    (_read_limited_feishu_webhook_body, :246) -> 413, so a lying or absent
+    Content-Length does not help
+  - 30s read timeout (_FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, :227) -> 408,
+    which closes the slowloris shape
+  - per-IP anomaly recording on every rejection path
+
+Residual uncertainty: without the public PoC it cannot be confirmed that the
+disclosed vector is one of the shapes above rather than a different exhaustion
+path (for example downstream of parsing, in event dispatch). The gates cover
+the request-level shapes; a reviewer revisiting this should look past
+_handle_webhook_request into the event handlers it calls.
+
+What closes it: same as above — an upstream release with a fixed-version range.
+"""
+ignoreUntil = 2027-01-24

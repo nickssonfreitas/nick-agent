@@ -4,6 +4,15 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+> **Looking for the map, not the rules?** `wiki/` documents the codebase one page
+> per subsystem: entry points, how the pieces connect, and what breaks if you touch
+> them wrong. Start at [`wiki/index.md`](wiki/index.md), or drop
+> `wiki/llms-wiki.txt` (every page in one file) into context. It is an OKF 0.2
+> bundle; the frontmatter contract and folder layout are in
+> [`wiki/concepts/wiki-conventions.md`](wiki/concepts/wiki-conventions.md). This file
+> stays the authority on rules and rationale; the wiki links here rather than
+> restating.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
@@ -245,7 +254,7 @@ hermes-agent/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
 │   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
-│   │                     #   yuanbao, webhook, api_server, ...). See ADDING_A_PLATFORM.md.
+│   │                     #   yuanbao, webhook, api_server, ...). See wiki/surfaces/adding-a-platform.md.
 │   └── builtin_hooks/    # Extension point for always-registered gateway hooks (none shipped)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
@@ -452,7 +461,7 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
 | Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
 | Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
-| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Session picker | `activeSessionSwitcher.tsx` | `session.list/resume` |
 | Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
@@ -576,6 +585,31 @@ reinforced after the Mini Shai-Hulud worm campaign (May 2026).
 4. Run `uv lock` to regenerate `uv.lock` with hashes.
 
 Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
+
+**Never run `npm audit fix --force` on this repository.** Two of the three fixes
+it currently proposes are downgrades of packages the project already runs newer
+versions of — `electron-builder` from 26.15.3 back to 22.14.13, four majors, and
+`react-router-dom` from 7.18 to 7.11 — and in all three advisory cases a patched
+version exists *above* the installed one. Plain `npm audit fix` is fine.
+
+Two related traps worth knowing before touching JS dependencies:
+
+- **Never delete `package-lock.json` to regenerate it. Use `npm ci`.** A fresh
+  resolve silently drops dependencies that `@assistant-ui/*` declares —
+  `use-effect-event`, `assistant-stream`, `assistant-cloud` — producing a tree
+  that fails with `Cannot find package 'assistant-stream'` and takes out 11 test
+  files in `apps/desktop`. npm gives no warning, there is no peer conflict, and a
+  second install pass does not repair it. This applies to lockfile merge
+  conflicts too: take one side and re-run `npm ci` rather than regenerating.
+  Bots that refresh the whole lock (dependabot, renovate) must be kept to
+  targeted bumps.
+- npm does **not** treat a change to root `overrides` as invalidating an existing
+  `package-lock.json`. Editing `overrides` and running `npm install` silently does
+  nothing; the lock has to be deleted and regenerated for it to apply — which the
+  previous point rules out. Any `overrides`-based remediation is blocked until the
+  resolver bug is fixed.
+
+Full triage, with the reproduction for each: `wiki/research/0005-semgrep-triage-2026-07-24.md` section 8.
 
 ---
 
@@ -866,6 +900,39 @@ Two parallel surfaces:
 
 When reviewing skill PRs, check which directory they target — heavy-dep or
 niche skills belong in `optional-skills/`.
+
+### GitHub taps (external skill repos)
+
+Third-party skill repos are consumed as **taps**, not vendored. Defaults live
+in `GitHubSource.DEFAULT_TAPS` (`tools/skills_hub.py`); users add their own
+with `hermes skills tap add owner/repo [--path skills/sub/]`.
+
+The scanner (`_list_skills_in_repo`) lists **exactly one directory level** at
+the tap path. A repo that nests skills by category needs one tap per
+category — `openai/skills` and `mattpocock/skills` both carry two entries for
+this reason. A single tap at `skills/` on a nested repo silently finds
+nothing, because the category dirs carry no `SKILL.md` of their own.
+
+Adding a default tap means two more edits: a label in `GITHUB_TAP_PROVIDERS`
+(same file) and its twin in `GITHUB_TAP_LABELS`
+(`website/scripts/extract-skills.py`). The two maps are duplicated across the
+Python runtime and the docs-site build; keep them in sync by hand. Labels must
+be single tokens — each becomes a `--source` filter value.
+
+Do **not** add third-party repos to `TRUSTED_REPOS` (`tools/skills_guard.py`).
+Community trust is the correct posture: `INSTALL_POLICY` then blocks anything
+the guard scores `caution` or `dangerous`.
+
+**Size gate.** `_list_skills_in_repo` fetches one `SKILL.md` per skill
+directory, so a tap costs one GitHub API call per skill on every cache miss.
+Keep large catalogues out of `DEFAULT_TAPS` — at ~800 skills a single browse
+burns roughly a sixth of the authenticated 5000/hr budget and cannot complete
+at all on the unauthenticated 60/hr limit. Big repos stay opt-in via
+`hermes skills tap add`. Rough ceiling for a default tap: a few dozen skills.
+
+A bare `owner/repo` identifier resolves to a root-level `SKILL.md`, which is
+the single-skill repo shape (e.g. `hermes skills install blader/humanizer`).
+Collection repos have no root `SKILL.md` and fall through to path lookup.
 
 ### SKILL.md frontmatter
 

@@ -4,14 +4,23 @@ name: Deploy VPS
 # (deploy/vps-hardened/), verifies the result against the security checklist,
 # and rolls back automatically if the checklist fails.
 #
-# Manual dispatch only, on purpose. This deploy touches a box holding plaintext
-# conversation history and live provider credentials; it should be an act, not
-# a side effect of merging. Pair it with a protected `production` environment
-# so a second pair of eyes approves each run.
+# Two ways in:
+#   - `workflow_call` from cd.yml — the continuous path, main pushes deploy.
+#     The caller hands over a digest it just built and tested, so there is no
+#     tag to resolve and no window where the tag could move underneath us.
+#   - `workflow_dispatch` — the manual path, for rolling a specific tag or for
+#     a dry run against what is already live.
+#
+# This deploy touches a box holding plaintext conversation history and live
+# provider credentials. Continuous does not mean unguarded: the image only
+# exists because tests/docker/ passed against those exact bytes, the checklist
+# gates the result, and a failed check rolls back without asking. If you want a
+# human in the loop as well, add required reviewers to the `production`
+# environment — the run then pauses there instead of proceeding.
 #
 # What this workflow deliberately does NOT do:
 #   - It does not create provider credentials. `hermes login` runs once, by
-#     hand, inside the container (BOOTSTRAP.md step 5) so keys never land in
+#     hand, inside the container (wiki/operations/vps-bootstrap.md step 5) so keys never land in
 #     `docker inspect` or a CI log.
 #   - It does not take a Hostinger snapshot. Hostinger keeps one snapshot per
 #     VM and creating one destroys the previous; restoring reverts the whole
@@ -19,12 +28,25 @@ name: Deploy VPS
 #     digest", which is surgical. See deploy/vps-hardened/hostinger-api.sh.
 #   - It does not touch the Caddyfile or .env. Those hold the auth boundary and
 #     are changed by a human who then re-runs the checklist.
+#
+# checkov:skip=CKV_GHA_7:O deploy e manual por desenho (ver o cabecalho acima), e
+# `image_tag` e exatamente o que o operador precisa escolher: qual release rolar.
+# O input chega via `env: IMAGE_TAG`, nunca interpolado em bloco run:, e a tag e
+# resolvida para um digest antes de qualquer coisa tocar o host. O job roda sob
+# `environment: production`, entao um segundo par de olhos aprova cada execucao.
+# Zerar os inputs deixaria o workflow sem como escolher o que deployar.
 
 on:
+  workflow_call:
+    inputs:
+      image_digest:
+        description: 'Immutable digest to deploy (sha256:...), produced by publish-image.yml'
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Upstream release tag to deploy (resolved to a digest, e.g. v1.2.3)'
+        description: 'Image tag to deploy, resolved to a digest (e.g. sha-98a2b62)'
         required: true
         type: string
       dry_run:
@@ -48,7 +70,7 @@ concurrency:
 env:
   # This fork's own image, not upstream's. The fork carries code-layer security
   # fixes (CSP in hermes_cli/web_server.py, the credential-mode clamp in
-  # hermes_cli/config.py) that the upstream image does not have, and DEPLOY.md's
+  # hermes_cli/config.py) that the upstream image does not have, and the deployment page's
   # posture assumes they are present. Built by publish-image.yml.
   IMAGE_REPO: ghcr.io/${{ github.repository }}
 
@@ -78,7 +100,7 @@ jobs:
             [ -n "${!var:-}" ] || missing="${missing} ${var}"
           done
           if [ -n "$missing" ]; then
-            echo "::error::missing repository secret(s):${missing} — see deploy/vps-hardened/BOOTSTRAP.md"
+            echo "::error::missing repository secret(s):${missing} — see wiki/operations/vps-bootstrap.md"
             exit 1
           fi
 
@@ -89,19 +111,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve image tag to an immutable digest
+      - name: Resolve the digest to deploy
         id: resolve
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
+          IMAGE_DIGEST: ${{ inputs.image_digest }}
         run: |
           set -euo pipefail
-          # A tag is mutable; the compose file must never carry one. Resolve it
-          # once here and pass only the digest downstream.
-          digest="$(docker buildx imagetools inspect "${IMAGE_REPO}:${IMAGE_TAG}" \
-            --format '{{ .Manifest.Digest }}')"
+          # Called from cd.yml: the caller already has a digest for the image it
+          # just built and tested. Taking it verbatim closes the window where a
+          # tag could be repointed between the build and this resolution.
+          if [ -n "${IMAGE_DIGEST:-}" ]; then
+            digest="$IMAGE_DIGEST"
+          else
+            # Dispatched by hand: a tag is mutable and the compose file must
+            # never carry one. Resolve it once, pass only the digest downstream.
+            digest="$(docker buildx imagetools inspect "${IMAGE_REPO}:${IMAGE_TAG}" \
+              --format '{{ .Manifest.Digest }}')"
+          fi
           case "$digest" in
-            sha256:*) ;;
-            *) echo "::error::could not resolve a digest for ${IMAGE_REPO}:${IMAGE_TAG}"; exit 1 ;;
+            sha256:*) [ "${#digest}" -eq 71 ] || { echo "::error::malformed digest: ${digest}"; exit 1; } ;;
+            *) echo "::error::could not resolve a digest for ${IMAGE_REPO}:${IMAGE_TAG:-<none>}"; exit 1 ;;
           esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "Resolved ${IMAGE_REPO}:${IMAGE_TAG} -> ${digest}"

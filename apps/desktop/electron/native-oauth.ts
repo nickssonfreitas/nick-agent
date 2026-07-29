@@ -27,6 +27,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
+import { escapeUntrustedForLog } from './log-sanitize'
 
 // The gateway status field that lists supported auth flows. See
 // hermes_cli/web_server.py status handler.
@@ -150,8 +151,15 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   const error = parsed.searchParams.get('error')
 
   if (error) {
-    const desc = parsed.searchParams.get('error_description') || ''
-    throw new Error(`Gateway rejected native login: ${error}${desc ? ` (${desc})` : ''}`)
+    // `error` and `error_description` come straight off a redirect the gateway
+    // controls, and this branch runs *before* the `state`/CSRF check below, so
+    // reaching it needs no secret. The message ends up in desktop.log, where
+    // `rememberLog` prefixes every line with `[hermes] ` — an embedded newline
+    // would forge a line indistinguishable from real output (CWE-117). Escape
+    // both so they stay one visible line.
+    const desc = escapeUntrustedForLog(parsed.searchParams.get('error_description') || '')
+    const safeError = escapeUntrustedForLog(error)
+    throw new Error(`Gateway rejected native login: ${safeError}${desc ? ` (${desc})` : ''}`)
   }
 
   const code = parsed.searchParams.get('code') || ''

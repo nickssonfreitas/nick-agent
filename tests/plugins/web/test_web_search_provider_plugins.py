@@ -68,23 +68,65 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """Every bundled web plugin discovers and registers correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    # The providers this repo ships and must never silently lose. Adding a
+    # plugin does NOT belong on this list — the second test below covers new
+    # arrivals by relation, so a new plugin cannot break this one just by
+    # existing. That is what the previous exact-equality version did: it was
+    # named "seven", already listed eight, and broke the moment a ninth
+    # plugin directory appeared.
+    REQUIRED_PROVIDERS = frozenset({
+        "brave-free",
+        "ddgs",
+        "exa",
+        "firecrawl",
+        "parallel",
+        "searxng",
+        "tavily",
+        "xai",
+    })
+
+    def test_bundled_providers_all_register(self) -> None:
+        """No shipped provider may drop out of the registry unnoticed."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
-        names = sorted(p.name for p in list_providers())
-        assert names == [
-            "brave-free",
-            "ddgs",
-            "exa",
-            "firecrawl",
-            "parallel",
-            "searxng",
-            "tavily",
-            "xai",
-        ]
+        names = {p.name for p in list_providers()}
+        missing = sorted(self.REQUIRED_PROVIDERS - names)
+
+        assert not missing, (
+            f"bundled web providers missing from the registry: {missing}. "
+            f"registered: {sorted(names)}"
+        )
+
+    def test_every_registered_provider_comes_from_a_bundled_plugin(self) -> None:
+        """The other direction, so a phantom registration cannot hide here.
+
+        Asserted as a relation between the plugin directories on disk and the
+        registry rather than against a hardcoded list: `plugins/web/<dir>/
+        plugin.yaml` declares ``name: web-<provider>`` and the registry drops
+        the prefix. A new plugin therefore extends both sides at once.
+        """
+        _ensure_plugins_loaded()
+        from pathlib import Path
+
+        from agent.web_search_registry import list_providers
+
+        plugins_dir = Path(__file__).resolve().parents[3] / "plugins" / "web"
+        declared = set()
+        for manifest in plugins_dir.glob("*/plugin.yaml"):
+            for line in manifest.read_text(encoding="utf-8").splitlines():
+                if line.startswith("name:"):
+                    declared.add(line.split(":", 1)[1].strip().removeprefix("web-"))
+                    break
+
+        assert declared, f"no plugin manifests found under {plugins_dir}"
+        unexpected = sorted({p.name for p in list_providers()} - declared)
+
+        assert not unexpected, (
+            f"providers registered with no bundled plugin manifest: {unexpected}"
+        )
 
     @pytest.mark.parametrize(
         "plugin_name,expected_search,expected_extract",

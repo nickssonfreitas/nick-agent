@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
+from plugins.platforms.whatsapp.adapter import _read_or_create_bridge_token
 
 
 class _AsyncCM:
@@ -68,13 +69,31 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     return adapter
 
 
-def _mock_health(json_data):
-    """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*."""
+def _mock_health(json_data, token: str = ""):
+    """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*.
+
+    Pass *token* to model a **genuine** bridge: it answers the ``?nonce=``
+    challenge with ``HMAC(token, nonce)`` the way bridge.js does, so the
+    adapter's identity check passes and whatever the test is really about —
+    the scriptHash staleness logic — is what decides the outcome. Without a
+    token the mock is an unidentified responder and the adapter refuses to
+    adopt it, which would make a staleness test pass for the wrong reason.
+    """
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value=json_data)
+
+    def _respond(*args, **kwargs):
+        from plugins.platforms.whatsapp.adapter import _bridge_health_proof
+
+        body = dict(json_data)
+        nonce = (kwargs.get("params") or {}).get("nonce")
+        if token and nonce:
+            body["proof"] = _bridge_health_proof(token, nonce)
+        mock_resp.json = AsyncMock(return_value=body)
+        return _AsyncCM(mock_resp)
+
     mock_session = MagicMock()
-    mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
+    mock_session.get = MagicMock(side_effect=_respond)
     mock_session.close = AsyncMock()
     return MagicMock(return_value=_AsyncCM(mock_session))
 
@@ -151,7 +170,10 @@ class TestStaleBridgeHandshake:
             session_path=tmp_path / "session",
         )
         disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health({"status": "connected", "scriptHash": disk_hash})
+        token = _read_or_create_bridge_token(tmp_path / "session")
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": disk_hash}, token=token
+        )
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", mock_client), \
@@ -166,6 +188,67 @@ class TestStaleBridgeHandshake:
         mock_task.assert_called_once()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("proof", ["", "not-the-right-proof"])
+    async def test_refuses_to_adopt_a_bridge_that_cannot_prove_the_token(
+        self, tmp_path, proof
+    ):
+        """Hostile adoption: matching scriptHash must not be enough.
+
+        ``scriptHash`` is sha256 of bridge.js, a world-readable file in the
+        install tree, so any local user can compute it. Before the token
+        proof, a process of another UID that bound the port first and answered
+        /health with that hash was adopted outright: the adapter marked itself
+        connected, opened a persistent session against it, and started feeding
+        its JSON into the agent — a read/write man-in-the-middle on the
+        WhatsApp account *and* on the agent's inbound prompts.
+
+        The scriptHash here is the real one on purpose. That is exactly what
+        the impostor can produce, and it is what made the old handshake pass.
+        """
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        token = _read_or_create_bridge_token(tmp_path / "session")
+        assert token, "the guard is vacuous without a token on disk"
+
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        # No `token=` — this responder cannot answer the nonce challenge.
+        mock_client = _mock_health(
+            {"status": "connected", "scriptHash": disk_hash, "proof": proof}
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as mock_task, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        # Not adopted: it went on to replace the impostor rather than trust it.
+        mock_popen.assert_called_once()
+        mock_task.assert_not_called()
+
+        # And the secret never went to it. This is the half that a token alone
+        # gets wrong: the client speaks first, so without a proof step it would
+        # hand the token to the impostor on the very next request.
+        for call in mock_client.call_args_list:
+            headers = call.kwargs.get("headers") or {}
+            assert token not in headers.values(), (
+                "the bridge token was sent to a peer that never proved it holds it"
+            )
+
+    @pytest.mark.asyncio
     async def test_restarts_bridge_on_hash_mismatch(self, tmp_path):
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -173,8 +256,9 @@ class TestStaleBridgeHandshake:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
+        token = _read_or_create_bridge_token(tmp_path / "session")
         mock_client = _mock_health(
-            {"status": "connected", "scriptHash": "deadbeefdeadbeef"}
+            {"status": "connected", "scriptHash": "deadbeefdeadbeef"}, token=token
         )
         # Spawned bridge dies immediately → connect() returns False, but the
         # assertion that matters is that the stale bridge was NOT reused and
@@ -205,8 +289,10 @@ class TestStaleBridgeHandshake:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
-        # Old bridge /health payload: no scriptHash key at all
-        mock_client = _mock_health({"status": "connected"})
+        # Old bridge /health payload: no scriptHash key at all. It still
+        # proves its identity, so staleness is what rejects it here.
+        token = _read_or_create_bridge_token(tmp_path / "session")
+        mock_client = _mock_health({"status": "connected"}, token=token)
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1

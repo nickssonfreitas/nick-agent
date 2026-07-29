@@ -4,6 +4,12 @@ name: JS Tests
 on:
   workflow_call:
 
+# Least privilege: this workflow only checks out and runs tests. Without an
+# explicit block it inherits the caller's token scope from ci.yml, which
+# includes packages:write, security-events:write and pull-requests:write.
+permissions:
+  contents: read
+
 jobs:
   workspaces:
     name: List npm workspaces
@@ -49,3 +55,30 @@ jobs:
           command: npm ci
       - run: npm run --prefix ${{ matrix.package }} check
       - run: npm run --prefix ${{ matrix.package }} fix
+
+  bridge:
+    # scripts/whatsapp-bridge is deliberately NOT an npm workspace: workspaces
+    # hoist dependencies to the root node_modules, and the WhatsApp adapter
+    # installs the bridge's deps on demand into the bridge directory itself
+    # (guarded by the .hermes-pkg-hash stamp). Making it a workspace would
+    # break that at runtime.
+    #
+    # The cost of staying outside the workspace list was that `npm query
+    # .workspace` never discovered it, so its *.test.mjs files ran nowhere.
+    # This job is what runs them.
+    name: WhatsApp bridge tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/whatsapp-bridge/package-lock.json
+      # bridge.native.test.mjs imports baileys, so the install is required to
+      # run the full set rather than a dependency-free subset.
+      - uses: ./.github/actions/retry
+        with:
+          command: npm ci --prefix scripts/whatsapp-bridge
+      - run: npm run --prefix scripts/whatsapp-bridge test

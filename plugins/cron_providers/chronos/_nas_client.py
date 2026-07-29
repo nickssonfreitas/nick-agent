@@ -7,7 +7,7 @@ implementation detail) and that scheduler's account; the agent just asks NAS to
 existing Nous Portal access token (the same token it already uses to call the
 portal — no new secret).
 
-Wire contract: ``docs/chronos-managed-cron-contract.md``.
+Wire contract: ``wiki/extensions/chronos-cron-contract.md``.
 """
 
 from __future__ import annotations

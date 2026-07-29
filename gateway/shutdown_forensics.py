@@ -244,7 +244,14 @@ def spawn_async_diagnostic(
         # Open the log file in append mode and let the subprocess inherit.
         # We use os.O_APPEND so concurrent diagnostics from rapid signals
         # don't trample each other.
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        # 0o600, nao 0o644: o dump carrega `ps auxf`, que expoe a linha de
+        # comando completa de todos os processos do usuario, e credencial
+        # passada por argumento aparece ali. Hoje o diretorio pai (~/.hermes e
+        # ~/.hermes/logs) e 0o700 e ja barra outro usuario, entao isto e
+        # defesa em profundidade: se o modo do diretorio afrouxar algum dia,
+        # o arquivo nao vira world-readable junto. Alinha com o 0o600 que o
+        # resto do codigo de producao usa (CodeQL py/overly-permissive-file).
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
 

@@ -25,7 +25,7 @@ set -euo pipefail
 DEPLOY_DIR="${HERMES_DEPLOY_DIR:-/opt/hermes/vps-hardened}"
 BACKUP_ROOT="${HERMES_BACKUP_DIR:-/opt/hermes/backups}"
 # This fork's image (publish-image.yml), not upstream's — the fork carries the
-# code-layer security fixes DEPLOY.md's posture assumes. Override for a
+# code-layer security fixes the deployment page's posture assumes. Override for a
 # different registry.
 IMAGE_REPO="${HERMES_IMAGE_REPO:-ghcr.io/nickssonfreitas/nick-agent}"
 HEALTH_TIMEOUT="${HERMES_HEALTH_TIMEOUT:-180}"
@@ -140,13 +140,13 @@ bring_up() {
 
 main() {
   local action="${1:-}"
-  cd "$DEPLOY_DIR" 2>/dev/null || die "deploy dir not found: ${DEPLOY_DIR} (see BOOTSTRAP.md)"
+  cd "$DEPLOY_DIR" 2>/dev/null || die "deploy dir not found: ${DEPLOY_DIR} (see wiki/operations/vps-bootstrap.md)"
 
   case "$action" in
     current)
       local d
       d="$(current_digest)"
-      [ -n "$d" ] || die "compose file is not pinned to a digest yet — run BOOTSTRAP.md step 2"
+      [ -n "$d" ] || die "compose file is not pinned to a digest yet — run wiki/operations/vps-bootstrap.md step 2"
       printf '%s\n' "$d"
       ;;
 
@@ -155,7 +155,7 @@ main() {
       target="${2:-}"
       require_digest "$target"
       previous="$(current_digest)"
-      [ -n "$previous" ] || die "compose file is not pinned to a digest yet — run BOOTSTRAP.md step 2"
+      [ -n "$previous" ] || die "compose file is not pinned to a digest yet — run wiki/operations/vps-bootstrap.md step 2"
 
       if [ "$previous" = "$target" ]; then
         log "already running ${target}; re-applying to pick up compose/Caddyfile changes"

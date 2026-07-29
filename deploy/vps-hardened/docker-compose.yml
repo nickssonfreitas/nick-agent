@@ -1,6 +1,6 @@
 # Hardened Hermes Agent deployment for an internet-facing VPS.
 #
-# Differences from the shipped docker-compose.yml, and why (see DEPLOY.md):
+# Differences from the shipped docker-compose.yml, and why (see wiki/operations/vps-deployment.md):
 #   - No `network_mode: host`. Bridge network, and ONLY the caddy proxy
 #     publishes host ports. Nothing else is reachable from the internet.
 #   - Image pinned by digest, not :latest — reproducible and immutable.
@@ -16,7 +16,7 @@
 
 services:
   gateway:
-    # Resolve a real digest first (see DEPLOY.md step 2) and replace this.
+    # Resolve a real digest first (see wiki/operations/vps-deployment.md step 2) and replace this.
     image: ghcr.io/nickssonfreitas/nick-agent@sha256:REPLACE_WITH_PINNED_DIGEST
     container_name: hermes
     restart: unless-stopped
@@ -58,7 +58,7 @@ services:
       - HERMES_UID=${HERMES_UID:-10000}
       - HERMES_GID=${HERMES_GID:-10000}
       - HERMES_DASHBOARD=1
-      # Basic-auth credentials. Generate the hash offline (DEPLOY.md step 3);
+      # Basic-auth credentials. Generate the hash offline (wiki/operations/vps-deployment.md step 3);
       # never put a plaintext password here on a real deployment.
       - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_USER}
       - HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=${HERMES_DASHBOARD_PW_HASH}
@@ -109,7 +109,7 @@ networks:
 
 volumes:
   # A named volume, not a NAS/SMB bind mount: the .env permission clamp needs a
-  # POSIX filesystem where chmod is honoured (see the security PR / DEPLOY.md).
+  # POSIX filesystem where chmod is honoured (see the security PR / wiki/operations/vps-deployment.md).
   hermes-data:
   caddy-data:
   caddy-config:

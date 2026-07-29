@@ -1,0 +1,7 @@
+name: web-defuddle
+version: 1.0.0
+description: "Local web content extraction via defuddle (npm). No API key and no paid backend — needs Node plus the defuddle package. Extract only; provides no search."
+author: Nicksson Freitas
+kind: backend
+provides_web_providers:
+  - defuddle

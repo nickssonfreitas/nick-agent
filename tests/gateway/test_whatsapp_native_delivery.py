@@ -36,7 +36,10 @@ async def test_send_poll_posts_to_bridge_poll_endpoint():
     assert result.success
     assert result.message_id == "poll-msg"
     call = adapter._http_session.post.call_args
-    assert call.args[0] == "http://127.0.0.1:3000/send-poll"
+    # Endpoint, not full URL: the bridge is reachable over a unix socket
+    # or loopback TCP depending on the platform, so the host part is a
+    # transport detail. What this test is about is the route.
+    assert call.args[0].endswith("/send-poll")
     assert call.kwargs["json"] == {
         "chatId": "15551234567@s.whatsapp.net",
         "question": "Proceed?",
@@ -63,7 +66,10 @@ async def test_send_location_posts_to_bridge_location_endpoint():
     assert result.success
     assert result.message_id == "loc-msg"
     call = adapter._http_session.post.call_args
-    assert call.args[0] == "http://127.0.0.1:3000/send-location"
+    # Endpoint, not full URL: the bridge is reachable over a unix socket
+    # or loopback TCP depending on the platform, so the host part is a
+    # transport detail. What this test is about is the route.
+    assert call.args[0].endswith("/send-location")
     assert call.kwargs["json"] == {
         "chatId": "15551234567@s.whatsapp.net",
         "latitude": 41.015,

@@ -1257,10 +1257,37 @@ class TestLazyMcpInstall:
     """
 
     def test_feature_registered_in_allowlist(self):
+        """The feature is registered, and its pins match the pyproject extra.
+
+        This used to assert a literal ``("mcp==1.26.0", "starlette==1.0.1")``.
+        Those numbers went stale the moment `717a3d056` bumped both packages
+        for CVE-2026-48710 and the PYSEC advisories, and the resulting failure
+        said nothing about a CVE — only that two hardcoded strings differed,
+        which is why it read as noise and survived.
+
+        The real rule is written in `lazy_deps.py` next to the pin itself
+        ("keep in sync with pyproject [computer-use]"), and it matters: if the
+        two drift, `hermes update` resolves the pyproject pin and downgrades
+        the package, reopening the CVE the lazy pin closed. Asserted as that
+        relation, the same shape as
+        `test_pyproject_aiohttp_pins_match_lazy_slack_pin`.
+        """
+        import tomllib
+        from pathlib import Path
+
         from tools import lazy_deps
-        assert lazy_deps.feature_specs("tool.computer_use") == (
-            "mcp==1.26.0",
-            "starlette==1.0.1",
+
+        specs = lazy_deps.feature_specs("tool.computer_use")
+        assert specs, "tool.computer_use must be registered in the lazy allowlist"
+
+        root = Path(__file__).resolve().parents[2]
+        with open(root / "pyproject.toml", "rb") as fh:
+            extra = tomllib.load(fh)["project"]["optional-dependencies"]["computer-use"]
+
+        assert sorted(specs) == sorted(extra), (
+            "LAZY_DEPS['tool.computer_use'] must match the pyproject "
+            "[computer-use] extra, or `hermes update` resolves the pyproject pin "
+            f"and undoes the lazy one. lazy={list(specs)}; pyproject={extra}"
         )
 
     def test_start_lazy_installs_mcp(self):

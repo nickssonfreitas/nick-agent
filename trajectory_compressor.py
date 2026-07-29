@@ -84,6 +84,18 @@ class CompressionConfig:
     """Configuration for trajectory compression."""
     # Tokenizer
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
+    # True is load-bearing, not an oversight: the default tokenizer above ships
+    # tokenization_kimi.py, so from_pretrained cannot build it without executing
+    # repo-supplied code. HuggingFace defaults this to False precisely because
+    # it IS code execution, so the exposure is real and worth stating plainly:
+    # whoever sets tokenizer_name is choosing whose code runs.
+    #
+    # What keeps it acceptable today is reach. This class is not registered in
+    # toolsets.py, is not imported by run_agent/agent/tools, and only runs from
+    # offline batch scripts where an operator picked the model. Revisit if
+    # either premise breaks — if the default moves to a tokenizer that needs no
+    # custom code, flip this to False; if the compressor ever becomes reachable
+    # from an agent or a remote request, it must default to False and opt in.
     trust_remote_code: bool = True
     
     # Compression targets

@@ -40,6 +40,8 @@ import { shouldLatchBackendStartFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
+import { parseDeepLink } from './deep-link'
+import { sanitizeLogChunk } from './log-sanitize'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -1156,7 +1158,13 @@ function scheduleDesktopLogFlush() {
 }
 
 function rememberLog(chunk) {
-  const text = String(chunk || '').trim()
+  // Sink-side pass: every line here gets a `[hermes] ` prefix, so a control
+  // character arriving from a caller that interpolated untrusted text would
+  // render as genuine log output. `\n` survives on purpose — splitting
+  // multi-line backend stdout is the feature — which is why call sites that
+  // interpolate attacker-reachable text must additionally run it through
+  // `escapeUntrustedForLog`. See electron/log-sanitize.ts.
+  const text = sanitizeLogChunk(chunk).trim()
 
   if (!text) {
     return
@@ -10534,24 +10542,22 @@ function handleDeepLink(url) {
     return
   }
 
-  let parsed
+  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  // Validated in electron/deep-link.ts: any web page can navigate the OS to a
+  // hermes:// URL, and this payload becomes a /blueprint command in the
+  // composer, so a non-slug kind/name/key or a control character in a value is
+  // rejected before the renderer ever sees it.
+  const payload = parseDeepLink(url)
 
-  try {
-    parsed = new URL(url)
-  } catch {
-    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
+  if (!payload) {
+    // Deliberately does not echo the url: it is attacker-supplied and this log
+    // feeds the diagnostics bundle.
+    rememberLog('[deeplink] ignoring malformed or invalid url')
 
     return
   }
 
-  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
-  const kind = parsed.hostname || ''
-  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
-  const params = {}
-  parsed.searchParams.forEach((v, k) => {
-    params[k] = v
-  })
-  const payload = { kind, name, params }
+  const { kind, name } = payload
 
   if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
     _pendingDeepLink = payload

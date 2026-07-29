@@ -132,12 +132,15 @@ export function useDesktopIntegrations({
         return
       }
 
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+      // Second layer — `handleDeepLink` in electron/main.ts already rejects a
+      // non-slug key/name and any value carrying control characters. Quote
+      // unconditionally and escape the backslash *before* the quote, otherwise
+      // a value ending in `\` would escape its own closing quote and let the
+      // rest of the string forge extra slots.
+      const quote = (raw: string) => `"${String(raw).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 
-          return `${k}=${sval}`
-        })
+      const slots = Object.entries(payload.params || {})
+        .map(([k, v]) => `${k}=${quote(v)}`)
         .join(' ')
 
       const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`

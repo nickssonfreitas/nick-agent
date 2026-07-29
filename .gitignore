@@ -10,6 +10,11 @@ act/
 .venv
 .vscode/
 .env
+# Deploy credentials read by scripts/setup-deploy-secrets.sh. The bare `.env`
+# rule above does NOT cover this name, and this file holds an SSH private key
+# that reaches root on the VPS — an uncovered name is one `git add .` away from
+# being published.
+.env.deploy
 .op.env
 .env.local
 .env.development.local
@@ -50,9 +55,18 @@ data/*
 node_modules
 browser-use/
 agent-browser/
-# Private keys
+# Saída gerada da skill graphify (graph.json + cache de AST): 74M em ~590
+# arquivos. Sem ignore ela entra no snapshot da auditoria e quebra dois
+# scanners — 27 dos 28 findings do gitleaks em 2026-07-27 vinham dos
+# fragmentos de código no cache de AST, e o semgrep-core morria com SIGSEGV
+# tentando parsear os JSON gerados. Artefato de ferramenta, nunca versionado.
+graphify-out/
+# Private keys / credential exports (security checklist: OWASP secrets rule —
+# never let a key or credential file get committed by accident).
 *.ppk
 *.pem
+*.key
+credentials.json
 privvy*
 images/
 __pycache__/
@@ -61,6 +75,16 @@ wandb/
 testlogs
 playwright-report/
 test-results/
+
+# Coverage data. scripts/run_tests.sh --cov runs one pytest subprocess per test
+# file, so coverage.py's parallel mode writes one .coverage.<file> per test file
+# before they are combined — thousands of them on a full run. None of it is ever
+# committed.
+.coverage
+.coverage.*
+.coverage-data/
+coverage.xml
+htmlcov/
 # Playwright visual regression baselines — cached from main in CI, not committed
 *-snapshots/
 
@@ -170,3 +194,24 @@ apps/desktop/demo/
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 native/fts5_cjk/*.so
+
+# Local security-tooling workspace. `.security/install.sh` materializes scanner
+# binaries (bin/), isolated Python venvs and the CodeQL bundle (tools/, ~1 GB),
+# plus env.sh and versions.lock; `.security/scan.sh` writes per-run logs/ and
+# timestamped reports/ with a `latest` symlink. All of it is machine-local and
+# rebuildable by re-running the installer, so only the two scripts are tracked.
+# Reports may also embed source excerpts — keep them out of the repo.
+.security/*
+!.security/install.sh
+!.security/scan.sh
+
+# DevMind local tool state. Enumerated per-path rather than ignoring
+# .devmind/ wholesale, because .devmind/product/quality/security/ is tracked
+# on purpose — it holds the security audit trail (triage docs, SBOMs).
+.devmind/locks/
+.devmind/memory/
+.devmind/workflows/
+.devmind/product/quality/assessments/
+.devmind/product/quality/codebase/
+.devmind/execution-registry.json
+.devmind/onboarding-state.json

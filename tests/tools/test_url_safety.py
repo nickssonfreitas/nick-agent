@@ -713,3 +713,60 @@ class TestRedirectTargetFromResponse:
     def test_no_location_no_next_request_returns_none(self):
         resp = _FakeResponse(is_redirect=True)
         assert redirect_target_from_response(resp) is None
+
+
+class TestLogInjection:
+    """Values that reach a log line must not be able to forge one (CWE-117).
+
+    The dashboard's provider validation hands this module a fully
+    user-controlled ``base_url``, so the log sinks here take attacker input by
+    design. The hostname sinks are safe on their own because ``urlsplit`` drops
+    tab/CR/LF before parsing; the two error paths log the **raw** string and
+    fire exactly when parsing failed, which is when the value is least likely
+    to be well-formed.
+    """
+
+    def test_control_characters_are_escaped_not_passed_through(self):
+        from tools.url_safety import _escape_for_log
+
+        out = _escape_for_log("http://evil.com\r\n2026-01-01 INFO forged entry")
+
+        assert "\n" not in out and "\r" not in out
+        assert "\\x0a" in out and "\\x0d" in out
+
+    def test_escaping_keeps_the_evidence_readable(self):
+        """Escaped, not stripped. Deleting the newline would hide that anything
+        was attempted; an operator reading the log needs to see the attempt.
+        """
+        from tools.url_safety import _escape_for_log
+
+        assert "forged" in _escape_for_log("http://evil.com\nforged")
+
+    def test_ordinary_urls_are_untouched(self):
+        from tools.url_safety import _escape_for_log
+
+        assert _escape_for_log("https://api.example.com/v1") == "https://api.example.com/v1"
+
+    def test_long_values_are_capped(self):
+        """An unbounded value is its own log-flooding problem."""
+        from tools.url_safety import _escape_for_log
+
+        out = _escape_for_log("h" * 5000)
+
+        assert len(out) < 500
+
+    def test_malformed_url_error_path_does_not_emit_a_newline(self, caplog):
+        """The end-to-end path: a URL that breaks parsing reaches the raw-value
+        sink, and no emitted record may contain a line break.
+        """
+        import logging
+
+        caplog.set_level(logging.DEBUG, logger="tools.url_safety")
+
+        # An invalid IPv6 literal makes urlsplit/ip parsing raise, which is the
+        # branch that logs the raw input.
+        is_always_blocked_url("http://[::1\r\nINJECTED]:80/")
+
+        for record in caplog.records:
+            assert "\n" not in record.getMessage()
+            assert "\r" not in record.getMessage()

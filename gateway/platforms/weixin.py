@@ -178,13 +178,18 @@ def _pkcs7_pad(data: bytes, block_size: int = 16) -> bytes:
 
 
 def _aes128_ecb_encrypt(plaintext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # ECB e ditado pelo CDN de midia do Weixin, nao escolhido aqui: a chave vem
+    # da propria API (aeskey_hex no upload, aes_key_b64 no download) e o
+    # servidor decifra em ECB. Trocar o modo produz upload ilegivel. Mesmo
+    # tratamento dado ao SHA1 de assinatura em wecom_crypto.py.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305 - modo exigido pelo CDN do Weixin
     encryptor = cipher.encryptor()
     return encryptor.update(_pkcs7_pad(plaintext)) + encryptor.finalize()
 
 
 def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
+    # Ver a nota em _aes128_ecb_encrypt: modo imposto pelo protocolo do CDN.
+    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())  # nosec B305 - modo exigido pelo CDN do Weixin
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
     if not padded:
@@ -1417,7 +1422,7 @@ class WeixinAdapter(BasePlatformAdapter):
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
         if text:
-            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            content_key = f"content:{sender_id}:{hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()}"
             if self._dedup.is_duplicate(content_key):
                 logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
                 return
@@ -2116,7 +2121,7 @@ class WeixinAdapter(BasePlatformAdapter):
         filekey = secrets.token_hex(16)
         aes_key = secrets.token_bytes(16)
         rawsize = len(plaintext)
-        rawfilemd5 = hashlib.md5(plaintext).hexdigest()
+        rawfilemd5 = hashlib.md5(plaintext, usedforsecurity=False).hexdigest()
         upload_response = await _get_upload_url(
             self._send_session,
             base_url=self._base_url,

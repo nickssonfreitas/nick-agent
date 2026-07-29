@@ -48,12 +48,18 @@ jobs:
 
       - name: Determine base ref
         id: base
+        # Expression values reach the shell through env, never spliced into the
+        # script text — GitHub hardening guidance, and it keeps this correct if
+        # a future caller passes something less trusted than github.base_ref.
+        env:
+          EVENT_NAME: ${{ inputs.event_name }}
+          BASE_BRANCH: ${{ github.base_ref }}
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
-            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            BASE_REF="origin/${{ github.base_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+            BASE_REF="origin/$BASE_BRANCH"
           else
             BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
             BASE_REF="HEAD~1"
@@ -160,3 +166,24 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+  file-sizes:
+    # Ratchet on the god-files: the load-bearing modules that grew tens of
+    # thousands of lines in a quarter. Fails a PR that grows a baselined file or
+    # pushes a new file past the threshold, so size growth is a reviewed
+    # decision (a diff to scripts/file-size-baseline.json) rather than a default.
+    # See scripts/check_file_sizes.py.
+    name: File-size ratchet (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run file-size ratchet
+        run: python scripts/check_file_sizes.py

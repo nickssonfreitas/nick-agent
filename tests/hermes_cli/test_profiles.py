@@ -125,6 +125,20 @@ class TestValidateProfileName:
         with pytest.raises(ValueError):
             validate_profile_name("")
 
+    @pytest.mark.parametrize("name", ["coder\n", "coder\n\n", "a\n"])
+    def test_trailing_newline_rejected(self, name):
+        """A trailing newline must not slip past the anchor.
+
+        Python's ``$`` also matches immediately before a final ``\\n``, so an
+        anchored pattern ending in ``$`` accepts ``"coder\\n"``. The profile
+        name becomes both an on-disk path and — through
+        ``_profile_setup_command`` — a command string handed to ``sh -lc``,
+        where a newline separates commands. The regex uses ``\\Z`` so the
+        validator rejects what the shell would treat as two lines.
+        """
+        with pytest.raises(ValueError):
+            validate_profile_name(name)
+
     @pytest.mark.parametrize("name", ["hermes", "test", "tmp", "root", "sudo"])
     def test_reserved_names_rejected(self, name):
         """Reserved names collide with the Hermes install itself or with

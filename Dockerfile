@@ -7,7 +7,14 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
 # is a one-line ARG change; see #4977.
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
-FROM debian:13.4
+# Pinned by digest (the tag alone is mutable) — this is the multi-arch OCI
+# image *index* digest for debian:13.4 (covers linux/amd64 + linux/arm64,
+# matching the TARGETARCH cases handled below), not a single-platform
+# manifest digest. Resolve a fresh one with:
+#   docker buildx imagetools inspect debian:13.4
+# and take the top-level "Digest:" value (not one of the per-platform
+# manifest digests listed under it) when bumping to a newer point release.
+FROM debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
@@ -228,6 +235,17 @@ RUN mkdir -p /opt/hermes/bin && \
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
+#
+# Scanners flag the trailing `USER root` (Checkov CKV_DOCKER_8, Semgrep
+# `last-user-is-root`) as "container runs as root". That reading is wrong for
+# an s6-supervised image: PID 1 must keep CAP_CHOWN/CAP_SETUID to remap the
+# hermes UID/GID to HERMES_UID/HERMES_GID and chown the bind-mounted /opt/data
+# volume at boot (docker/stage2-hook.sh). Pinning `USER hermes` here would
+# break that remap and leave the volume unwritable. No long-running process
+# stays as root: every entrypoint drops privileges — docker/main-wrapper.sh,
+# docker/hermes-exec-shim.sh, docker/s6-rc.d/*/run and docker/cont-init.d/*.
+#checkov:skip=CKV_DOCKER_8:PID 1 precisa de root para o remap de UID/GID e chown do volume; os serviços caem para hermes via s6-setuidgid.
+# nosemgrep: last-user-is-root
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
@@ -359,5 +377,18 @@ VOLUME [ "/opt/data" ]
 # and exec's the final program so its exit code becomes the container
 # exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
 # like `--version` would be intercepted by /init's POSIX shell.
+# Liveness probe. Deliberately NOT an HTTP check: this image has no EXPOSE and
+# no fixed listening port — the same image runs `chat`, `--tui`, `gateway` and
+# `serve`, so probing a port would mark healthy containers unhealthy in every
+# interactive mode. Instead we assert the thing common to all of them: the exec
+# shim resolves and the Python environment imports far enough to report a
+# version. That catches the failure this actually guards against — a corrupted
+# or half-mounted /opt/hermes tree, or a data volume that shadowed the install.
+#
+# start-period covers cold Python startup; the 5m interval keeps the recurring
+# cost negligible against a ~1s interpreter boot.
+HEALTHCHECK --interval=5m --timeout=30s --start-period=60s --retries=3 \
+    CMD [ "/opt/hermes/bin/hermes", "--version" ]
+
 ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
 CMD [ ]

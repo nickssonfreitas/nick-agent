@@ -60,7 +60,7 @@ class PKCS7Encoder:
 
 def _sha1_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> str:
     parts = sorted([token, timestamp, nonce, encrypt])
-    return hashlib.sha1("".join(parts).encode("utf-8")).hexdigest()
+    return hashlib.sha1("".join(parts).encode("utf-8")).hexdigest()  # nosec B324 - SHA1 exigido pelo msg_signature de callback do WeCom; o algoritmo e ditado pela API remota
 
 
 class WXBizMsgCrypt:

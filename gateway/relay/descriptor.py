@@ -10,7 +10,7 @@ Telegram, Matrix, Signal, ... without per-platform branching.
 EXPERIMENTAL: this schema MAY CHANGE without a deprecation cycle until at least
 two real Class-1 platforms have validated it. Evolution during the experimental
 phase is additive-only, gated by ``contract_version`` (see
-docs/relay-connector-contract.md).
+wiki/extensions/relay-connector-contract.md).
 
 Field origins (most are a wire-serializable projection of ``PlatformEntry`` plus
 the per-instance capability methods on ``BasePlatformAdapter``):
@@ -84,7 +84,7 @@ class CapabilityDescriptor:
         # advertise max_message_length 0 ("no limit"), and a buggy/hostile one
         # may send 0 or a negative; either is a degenerate value that would flow
         # straight into the adapter's MAX_MESSAGE_LENGTH and truncate_message().
-        # Map it to the documented 4096 default (docs/relay-connector-contract.md;
+        # Map it to the documented 4096 default (wiki/extensions/relay-connector-contract.md;
         # mirrors from_platform_entry's `or 4096`) so from_json never yields a
         # descriptor that can't chunk a real message.
         if "max_message_length" in filtered:

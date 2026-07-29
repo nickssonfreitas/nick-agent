@@ -37,7 +37,18 @@ import sys
 
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
-_DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
+# Docker setup. Matched with str.startswith against repo-relative paths, so
+# every entry is root-anchored except the "docker/" directory prefix.
+#
+# ".hadolint." rather than a full filename: the tracked config is
+# .hadolint.yaml, but this tuple said ".hadolint.yml" and so had never matched
+# it — the prefix covers both spellings and cannot drift again.
+#
+# "docker-compose" covers docker-compose.yml and docker-compose.windows.yml.
+# Without it a PR touching only compose left docker_meta false, which skipped
+# the docker job and (since the gate only requires docker when docker_meta is
+# true) let a broken compose file merge unbuilt.
+_DOCKER_META = ("docker/", ".hadolint.", "Dockerfile", "docker-compose")
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND

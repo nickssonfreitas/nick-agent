@@ -50,7 +50,7 @@ a single plugin-form module that requires zero core edits:
   send_voice / send_video, ``LINE_PUBLIC_URL`` env, macOS ``/tmp`` root.
 * PR #16832 (jethac)      — config wiring style, voice/image tests.
 * PR #21023 (perng)       — plugin-form skeleton (the only one already
-  modeled on ``ADDING_A_PLATFORM.md``), reply→push fallback at 50s TTL,
+  modeled on ``wiki/surfaces/adding-a-platform.md``), reply→push fallback at 50s TTL,
   loading-animation indicator, source dispatcher.
 * PR #14942 (soichiyo)    — Cloudflare-tunnel operating model (docs only).
 * PR #14988 (David-0x221Eight) — text-first scope discipline.

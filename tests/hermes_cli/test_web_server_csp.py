@@ -39,9 +39,9 @@ class TestBuildDashboardCsp:
     """Unit-test the policy builder directly — no app spin-up needed."""
 
     def test_script_src_is_nonce_only(self):
-        from hermes_cli.web_server import _build_dashboard_csp
+        from hermes_cli.dashboard_csp import build_dashboard_csp
 
-        csp = _build_dashboard_csp("NONCEVALUE")
+        csp = build_dashboard_csp("NONCEVALUE")
         directives = {
             d.strip().split(" ", 1)[0]: d.strip()
             for d in csp.split(";")
@@ -53,20 +53,20 @@ class TestBuildDashboardCsp:
         assert "'unsafe-inline'" not in script_src
 
     def test_default_src_is_none_and_frame_ancestors_denied(self):
-        from hermes_cli.web_server import _build_dashboard_csp
+        from hermes_cli.dashboard_csp import build_dashboard_csp
 
-        csp = _build_dashboard_csp("N")
+        csp = build_dashboard_csp("N")
         assert "default-src 'none'" in csp
         assert "frame-ancestors 'none'" in csp
         assert "object-src 'none'" in csp
 
     def test_style_src_carries_nonce(self):
-        from hermes_cli.web_server import _build_dashboard_csp
+        from hermes_cli.dashboard_csp import build_dashboard_csp
 
         # style-src intentionally keeps 'unsafe-inline' (runtime theme <style>
         # in the SPA has no server-reachable nonce hook), but must still carry
         # the nonce so a CSP-L3 browser can prefer it.
-        csp = _build_dashboard_csp("STYLENONCE")
+        csp = build_dashboard_csp("STYLENONCE")
         directives = {
             d.strip().split(" ", 1)[0]: d.strip()
             for d in csp.split(";")

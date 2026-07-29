@@ -21,6 +21,20 @@ import urllib.request
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+# The feed URL is operator-supplied and the response is whatever that server
+# returns, so this is untrusted XML. Prefer defusedxml, which refuses entity
+# declarations outright rather than leaning on expat's amplification limit.
+# Kept as try/except because this script also runs standalone, outside an
+# install that carries the project's dependencies.
+try:
+    from defusedxml.ElementTree import fromstring as _xml_fromstring
+    from defusedxml.common import DefusedXmlException
+
+    _XML_ERRORS: tuple[type[Exception], ...] = (ET.ParseError, DefusedXmlException)
+except ImportError:  # pragma: no cover - standalone execution
+    _xml_fromstring = ET.fromstring
+    _XML_ERRORS = (ET.ParseError,)
+
 sys.path.insert(0, str(Path(__file__).parent))
 from _watermark import Watermark, format_items_as_markdown  # type: ignore
 
@@ -35,8 +49,8 @@ def _parse_feed(xml_bytes: bytes):
     Handles both RSS 2.0 ``<item>`` and Atom ``<entry>``.
     """
     try:
-        root = ET.fromstring(xml_bytes)
-    except ET.ParseError as e:
+        root = _xml_fromstring(xml_bytes)
+    except _XML_ERRORS as e:
         print(f"watch_rss: invalid XML: {e}", file=sys.stderr)
         sys.exit(2)
 

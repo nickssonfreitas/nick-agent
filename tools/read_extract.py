@@ -13,6 +13,40 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+# Security: .docx/.xlsx are user-supplied zip archives, so every XML part read
+# out of them is untrusted input, and defusedxml is the project's stated answer
+# for untrusted XML (see plugins/security-guidance and the wecom adapter).
+#
+# Calibrated, not assumed: measured against expat 2.6.1, the stdlib parser
+# already rejects high-amplification billion-laughs payloads via expat's own
+# limit (an 8-level fan-8 bomb raises ParseError). What it still expands is
+# *bounded* amplification below that threshold — a 5-level fan-5 document
+# inflates ~64 bytes into 40 KB. So the residual risk here is small, and this
+# swap is defense in depth rather than a fix for an open hole: defusedxml
+# refuses entity declarations outright instead of relying on a threshold.
+#
+# defusedxml is a core dependency (moved out of the [wecom] extra on
+# 2026-07-26, precisely so this guard is not conditional on an unrelated
+# messaging extra). The try/except stays anyway: this module advertises
+# "without adding hard dependencies" and is imported on paths that must not
+# hard-fail, so a stripped or partial install degrades to the stdlib parser
+# instead of breaking read_file outright.
+#
+# ET stays imported for Element/ParseError; only the parse entry point swaps.
+# defusedxml rejects with DefusedXmlException, which is NOT a ParseError
+# subclass, so it has to join the caught set or a rejected bomb would escape
+# this module's ExtractionError contract as an unhandled error.
+try:
+    from defusedxml.ElementTree import fromstring as _xml_fromstring
+    from defusedxml.common import DefusedXmlException
+
+    _XML_ERRORS: tuple[type[Exception], ...] = (ET.ParseError, DefusedXmlException)
+    XML_HARDENED = True
+except ImportError:  # pragma: no cover - depends on optional extra
+    _xml_fromstring = ET.fromstring
+    _XML_ERRORS = (ET.ParseError,)
+    XML_HARDENED = False
+
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
@@ -97,10 +131,10 @@ def _extract_notebook(path: str) -> str:
 
 def _zip_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
     try:
-        return ET.fromstring(zf.read(name))
+        return _xml_fromstring(zf.read(name))
     except KeyError as exc:
         raise ExtractionError(f"Missing {name}") from exc
-    except ET.ParseError as exc:
+    except _XML_ERRORS as exc:
         raise ExtractionError(f"Malformed XML in {name}: {exc}") from exc
 
 
@@ -146,7 +180,7 @@ def _extract_xlsx(path: str) -> str:
                     continue
                 try:
                     rows = _sheet_rows(zf.read(part), shared)
-                except ET.ParseError:
+                except _XML_ERRORS:
                     continue
                 out.append(f"# ── Sheet: {name} ──")
                 out.extend("\t".join(row) for row in rows)
@@ -167,8 +201,8 @@ def _shared_strings(zf: zipfile.ZipFile, names: set[str]) -> list[str]:
     if "xl/sharedStrings.xml" not in names:
         return []
     try:
-        root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
-    except ET.ParseError:
+        root = _xml_fromstring(zf.read("xl/sharedStrings.xml"))
+    except _XML_ERRORS:
         return []
     s = f"{{{_NS_S}}}"
     return ["".join(t.text or "" for t in item.iter(f"{s}t")) for item in root.iter(f"{s}si")]
@@ -188,8 +222,8 @@ def _workbook_rels(zf: zipfile.ZipFile, names: set[str]) -> dict[str, str]:
     if rels_path not in names:
         return {}
     try:
-        root = ET.fromstring(zf.read(rels_path))
-    except ET.ParseError:
+        root = _xml_fromstring(zf.read(rels_path))
+    except _XML_ERRORS:
         return {}
     rel_tag = f"{{{_NS_PKG_REL}}}Relationship"
     return {rel.get("Id", ""): rel.get("Target", "") for rel in root.iter(rel_tag) if rel.get("Id")}
@@ -210,7 +244,7 @@ def _col_index(ref: str) -> int:
 
 
 def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
-    root = ET.fromstring(xml_bytes)
+    root = _xml_fromstring(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
     for row in root.iter(f"{s}row"):

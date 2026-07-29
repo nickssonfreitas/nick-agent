@@ -17,6 +17,7 @@ import unittest
 import zipfile
 
 from tools.read_extract import (
+    XML_HARDENED,
     ExtractionError,
     extract_document_text,
     is_extractable_document,
@@ -289,6 +290,61 @@ class TestReadFileToolIntegration(unittest.TestCase):
         res = json.loads(read_file_tool(p))
         self.assertTrue(res.get("extracted_document"))
         self.assertIn("Report body", res["content"])
+
+
+class TestXmlEntityExpansion(unittest.TestCase):
+    """BND-001: .docx/.xlsx are user-supplied archives, so the XML inside them
+    is untrusted. The stdlib parser expands internal entities and will happily
+    inflate a billion-laughs document; defusedxml refuses it. Whichever parser
+    is active, a bomb must surface as ExtractionError rather than escaping the
+    module contract or burning CPU."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self.tmpdir.name
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    @staticmethod
+    def _bomb_xml(levels: int, fan: int) -> str:
+        entities = ['<!ENTITY e0 "' + "A" * 64 + '">']
+        entities += [f'<!ENTITY e{i} "{"&e%d;" % (i - 1) * fan}">' for i in range(1, levels)]
+        return (
+            '<?xml version="1.0"?><!DOCTYPE d [' + "".join(entities) + ']>'
+            f'<w:document xmlns:w="{_NS_W}"><w:body><w:p><w:r>'
+            f"<w:t>&e{levels - 1};</w:t></w:r></w:p></w:body></w:document>"
+        )
+
+    def test_docx_high_amplification_bomb_is_rejected(self):
+        """Holds with either parser: expat's own amplification limit rejects a
+        fan-8 bomb, and defusedxml refuses the entity declarations outright.
+        Either way it must arrive as ExtractionError."""
+        p = os.path.join(self.tmp, "bomb.docx")
+        _write_docx(p, self._bomb_xml(levels=12, fan=8))
+
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
+    @unittest.skipUnless(XML_HARDENED, "defusedxml not installed (optional extra)")
+    def test_docx_low_amplification_entities_rejected_when_hardened(self):
+        """The case that distinguishes the two parsers. A 5-level fan-5 payload
+        sits under expat's threshold, so the stdlib expands ~64 bytes into
+        ~40 KB; defusedxml rejects any entity declaration regardless of size."""
+        p = os.path.join(self.tmp, "small-bomb.docx")
+        _write_docx(p, self._bomb_xml(levels=5, fan=5))
+
+        with self.assertRaises(ExtractionError):
+            extract_document_text(p)
+
+    def test_benign_entity_free_docx_still_extracts(self):
+        """Guard against over-blocking: the hardened parser must not reject
+        ordinary documents."""
+        p = os.path.join(self.tmp, "ok.docx")
+        _write_docx(p, (f'<?xml version="1.0"?><w:document xmlns:w="{_NS_W}">'
+                        "<w:body><w:p><w:r><w:t>Plain text</w:t></w:r></w:p>"
+                        "</w:body></w:document>"))
+        self.assertIn("Plain text", extract_document_text(p))
 
 
 if __name__ == "__main__":

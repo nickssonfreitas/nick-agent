@@ -21,7 +21,7 @@ Design constraints (see the plan's DQ-1):
 Inert unless ``cron.provider: chronos``. ``resolve_cron_scheduler`` falls back
 to the built-in if Chronos is unavailable, so cron never loses its trigger.
 
-Wire contract: ``docs/chronos-managed-cron-contract.md``.
+Wire contract: ``wiki/extensions/chronos-cron-contract.md``.
 """
 
 from __future__ import annotations

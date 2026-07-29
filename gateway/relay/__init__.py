@@ -8,7 +8,7 @@ production ``WebSocketRelayTransport`` that dials the connector. The public API
 deprecation cycle until at least two real Class-1 platforms (Discord + Telegram)
 have shaken out the schema.
 
-See ``docs/relay-connector-contract.md`` for the formal cross-repo interface.
+See ``wiki/extensions/relay-connector-contract.md`` for the formal cross-repo interface.
 
 Activation is driven by configuration, not a separate feature flag: the relay
 platform is registered when a connector relay URL is configured
