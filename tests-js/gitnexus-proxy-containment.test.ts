@@ -17,12 +17,13 @@
  * resolved path actually stays inside the root, which only the real
  * ``path.resolve`` + prefix comparison can answer.
  */
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 const PROXY = path.resolve(
@@ -45,6 +46,7 @@ function rawGet(target: string): Promise<{ status: number; body: string }> {
         res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
       },
     )
+
     req.on('error', reject)
     req.end()
   })
@@ -68,7 +70,10 @@ beforeAll(async () => {
 
 afterAll(() => {
   child?.kill()
-  if (root) rmSync(root, { recursive: true, force: true })
+
+  if (root) {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 function varPort(): number {
@@ -80,11 +85,13 @@ async function waitForListening(): Promise<void> {
   for (let i = 0; i < 100; i++) {
     try {
       await rawGet('/')
+
       return
     } catch {
       await new Promise((r) => setTimeout(r, 100))
     }
   }
+
   throw new Error('proxy did not start')
 }
 
@@ -128,11 +135,14 @@ describe('gitnexus proxy path containment', () => {
 describe('gitnexus proxy network exposure', () => {
   it('binds loopback only, so the LAN cannot reach it', () => {
     const port = new URL(base).port
+
     const listening = execFileSync('sh', ['-c', 'ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true'])
       .toString()
       .split('\n')
       .filter((l) => l.includes(`:${port}`))
+
     expect(listening.length).toBeGreaterThan(0)
+
     // Must be bound to 127.0.0.1, never 0.0.0.0/*/:::
     for (const line of listening) {
       expect(line).toMatch(/127\.0\.0\.1:/)

@@ -52,9 +52,12 @@ export function isSafeDeepLinkValue(value: unknown): value is string {
  * and the desktop log feeds the diagnostics bundle.
  */
 export function parseDeepLink(url: unknown): DeepLinkPayload | null {
-  if (!url || typeof url !== 'string') return null
+  if (!url || typeof url !== 'string') {
+    return null
+  }
 
   let parsed: URL
+
   try {
     parsed = new URL(url)
   } catch {
@@ -64,6 +67,7 @@ export function parseDeepLink(url: unknown): DeepLinkPayload | null {
   const kind = parsed.hostname || ''
 
   let name: string
+
   try {
     name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
   } catch {
@@ -71,21 +75,29 @@ export function parseDeepLink(url: unknown): DeepLinkPayload | null {
     return null
   }
 
-  if (!isDeepLinkSlug(kind) || !isDeepLinkSlug(name)) return null
+  if (!isDeepLinkSlug(kind) || !isDeepLinkSlug(name)) {
+    return null
+  }
 
   const params: Record<string, string> = {}
   let rejected = false
   parsed.searchParams.forEach((value, key) => {
-    if (rejected) return
+    if (rejected) {
+      return
+    }
+
     if (!isDeepLinkSlug(key) || !isSafeDeepLinkValue(value)) {
       rejected = true
 
       return
     }
+
     params[key] = value
   })
 
-  if (rejected) return null
+  if (rejected) {
+    return null
+  }
 
   return { kind, name, params }
 }

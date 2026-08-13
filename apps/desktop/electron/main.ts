@@ -55,8 +55,6 @@ import {
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
-import { parseDeepLink } from './deep-link'
-import { sanitizeLogChunk } from './log-sanitize'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -86,6 +84,7 @@ import {
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { installRendererCsp } from './csp'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { parseDeepLink } from './deep-link'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import {
   buildPosixCleanupScript,
@@ -155,6 +154,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { sanitizeLogChunk } from './log-sanitize'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   oauthGuardMayHardFail,

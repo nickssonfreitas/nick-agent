@@ -27,6 +27,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
+
 import { escapeUntrustedForLog } from './log-sanitize'
 
 // The gateway status field that lists supported auth flows. See

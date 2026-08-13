@@ -21,9 +21,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  MAX_LOG_LINE_CHARS,
   capLogLine,
   escapeUntrustedForLog,
+  MAX_LOG_LINE_CHARS,
   sanitizeLogChunk,
   stripLogControlChars,
 } from '../apps/desktop/electron/log-sanitize'
@@ -116,6 +116,7 @@ describe('the reported path: OAuth loopback callback', () => {
 
   it('does not let the error code itself forge a line', () => {
     const hostile = encodeURIComponent('x\n[hermes] forged')
+
     try {
       parseLoopbackCallback(`/callback?error=${hostile}`, 'st')
     } catch (err) {
