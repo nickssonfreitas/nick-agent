@@ -37,7 +37,7 @@ this is, whether the previous turn is still running) has to be explicit here.
 | `gateway/platform_registry.py` | Which adapters exist and how they are constructed |
 | `gateway/config.py` | Gateway config loading (a raw YAML read; see the loader trap) |
 | `gateway/delivery.py`, `delivery_ledger.py`, `mirror.py` | Outbound delivery and dedup |
-| `gateway/stream_*.py`, `progress_pump.py` | Streaming deltas and tool-progress pumping |
+| `gateway/stream_*.py` | Streaming deltas and tool-progress pumping |
 | `gateway/status.py`, `status_phrases.py` | Status display and **credential scoped locks** |
 | `gateway/authz_mixin.py`, `slash_access.py`, `pairing.py` | Authorization and pairing |
 | `gateway/profile_routing.py` | Routing across profiles |
@@ -117,8 +117,8 @@ handlers and the access policy. Skill commands come through
 Adapters declare their own capabilities rather than the runner guessing:
 `supports_draft_streaming`, `prefers_fresh_final_streaming`,
 `streaming_overflow_limit`, `message_len_fn`. `gateway/stream_consumer.py` and
-`gateway/progress_pump.py` turn agent events into whatever cadence the platform can
-absorb, and `gateway/delivery_ledger.py` keeps a record so a retry does not double
+`gateway/run.py`'s `TurnRunner` turn agent events into whatever cadence the platform
+can absorb, and `gateway/delivery_ledger.py` keeps a record so a retry does not double
 post.
 
 `EphemeralReply` (a `str` subclass carrying a TTL) lets a handler return text the
@@ -166,7 +166,7 @@ conversation's role alternation stays intact. See [Scheduling](../extensions/sch
 | Add a platform | `plugins/platforms/<name>/` + [Adding a messaging platform](adding-a-platform.md) |
 | Add a gateway-only slash command | `hermes_cli/commands.py` (`gateway_only=True`) + `gateway/run.py` |
 | Make a command reach a busy agent | both guards, dispatched inline |
-| Change streaming cadence | `gateway/stream_consumer.py`, `progress_pump.py` |
+| Change streaming cadence | `gateway/stream_consumer.py`, `gateway/run.py` (`TurnRunner`) |
 | Change authorization | `gateway/authz_mixin.py`, `slash_access.py`, `pairing.py` |
 | Fix duplicate sends | `gateway/delivery_ledger.py`, `mirror.py` |
 | Fix two profiles fighting over a token | `acquire_scoped_lock()` in the adapter |
