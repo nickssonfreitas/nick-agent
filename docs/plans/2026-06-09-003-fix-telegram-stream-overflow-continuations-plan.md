@@ -1,1 +1,0 @@
-Moved to [`wiki/decisions/0002-telegram-overflow-continuations.md`](../../wiki/decisions/0002-telegram-overflow-continuations.md) in the 2026-07-28 wiki migration. This file is a pointer; edit the wiki page.

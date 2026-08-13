@@ -44,6 +44,11 @@ class _RecordingClient:
     word "metadata" when the host is ``metadata.google.internal`` — which made
     an earlier version of this test pass even with the guard removed. Counting
     attempts is the assertion that cannot be satisfied by accident.
+
+    Stands in for ``httpx.AsyncClient``: both probe endpoints moved to the
+    async client upstream. A double for the sync ``httpx.Client`` records
+    nothing, and an empty attempt list reads exactly like "the guard blocked
+    it" — the failure mode this class exists to rule out.
     """
 
     attempts: list = []
@@ -51,13 +56,13 @@ class _RecordingClient:
     def __init__(self, *a, **k):
         pass
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *a):
+    async def __aexit__(self, *a):
         return False
 
-    def get(self, url, **kwargs):
+    async def get(self, url, **kwargs):
         import httpx
 
         type(self).attempts.append(url)
@@ -76,7 +81,7 @@ def attempts(monkeypatch):
     import httpx
 
     _RecordingClient.attempts = []
-    monkeypatch.setattr(httpx, "Client", _RecordingClient)
+    monkeypatch.setattr(httpx, "AsyncClient", _RecordingClient)
     yield _RecordingClient.attempts
     _RecordingClient.attempts = []
 

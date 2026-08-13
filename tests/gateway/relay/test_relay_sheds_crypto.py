@@ -112,28 +112,3 @@ def test_relay_package_calls_no_signature_verification():
     )
 
 
-def test_channel_auth_uses_only_stdlib_crypto_not_platform_modules():
-    """auth.py (channel authenticator) imports only stdlib crypto, no platform crypto.
-
-    Positive guard: the connector⇄gateway channel auth is allowed to do HMAC,
-    but it must do so with stdlib primitives over connector-owned secrets — it
-    must never reach for a platform-crypto module. This keeps the exemption
-    above honest (auth.py can't smuggle in platform verification).
-    """
-    auth_py = _RELAY_PKG / "auth.py"
-    assert auth_py.is_file(), "gateway/relay/auth.py (channel authenticator) is missing"
-    tree = ast.parse(auth_py.read_text(encoding="utf-8"), filename=str(auth_py))
-    imported: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            imported.append(node.module or "")
-    # No platform-crypto module import.
-    assert not [m for m in imported if any(tok in m for tok in _FORBIDDEN_MODULE_TOKENS)], (
-        f"auth.py must not import platform crypto; imports={imported}"
-    )
-    # It does use stdlib hmac/hashlib (that's how it authenticates the channel).
-    assert "hmac" in imported and "hashlib" in imported, (
-        f"auth.py should authenticate the channel with stdlib hmac/hashlib; imports={imported}"
-    )

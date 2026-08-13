@@ -237,6 +237,20 @@ def run_configured_retention(
     from hermes_cli.config import load_config
 
     cfg = load_config().get("sessions") or {}
+
+    # Auto-archive soft-hides stale sessions and never deletes, so it is
+    # independent of the destructive sweep below and of the shield: it runs
+    # first, before the auto_prune early return, so enabling one does not
+    # require enabling the other. Off by default upstream; kept that way.
+    if cfg.get("auto_archive", False):
+        try:
+            db.maybe_auto_archive(
+                idle_days=float(cfg.get("auto_archive_days", 3)),
+                min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            )
+        except Exception:  # maintenance must never block startup
+            logger.debug("auto-archive skipped", exc_info=True)
+
     if not cfg.get("auto_prune", True):
         return {"skipped": True, "disabled": True, "pruned": 0, "protected": 0}
     return run_retention_maintenance(
@@ -246,6 +260,7 @@ def run_configured_retention(
         vacuum=bool(cfg.get("vacuum_after_prune", True)),
         sessions_dir=sessions_dir,
         prune_preexisting=bool(cfg.get("prune_preexisting", False)),
+        min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
         notify=notify,
     )
 
@@ -257,6 +272,7 @@ def run_retention_maintenance(
     vacuum: bool = True,
     sessions_dir: Optional[Path] = None,
     prune_preexisting: bool = False,
+    min_vacuum_interval_days: int = 30,
     notify: Optional[Callable[[str], None]] = print,
     now: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -308,6 +324,7 @@ def run_retention_maintenance(
                 min_interval_hours=min_interval_hours,
                 vacuum=vacuum,
                 sessions_dir=sessions_dir,
+                min_vacuum_interval_days=min_vacuum_interval_days,
             )
             result.update(delegated)
             if shield and not delegated.get("skipped"):

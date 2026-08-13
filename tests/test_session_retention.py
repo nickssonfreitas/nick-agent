@@ -36,13 +36,22 @@ def db(tmp_path):
 
 
 def _ended_session(db, sid, days_ago):
-    """Create an ended session that started ``days_ago`` days in the past."""
+    """Create an ended session last active ``days_ago`` days in the past.
+
+    Both timestamps are back-dated on purpose. ``prune_sessions`` measures age
+    by *inactivity* — ``MAX(messages.timestamp)`` falling back to
+    ``started_at`` — so back-dating only the session row leaves a message
+    stamped ``now`` and the session never ages out. The shield, separately,
+    keys off ``started_at``, so a helper that moved just one of the two would
+    make either the age assertions or the shield assertions vacuous.
+    """
     db.create_session(session_id=sid, source="cli")
     db.append_message(session_id=sid, role="user", content=f"hello from {sid}")
     db.end_session(sid, end_reason="done")
+    when = time.time() - days_ago * DAY
+    db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (when, sid))
     db._conn.execute(
-        "UPDATE sessions SET started_at = ? WHERE id = ?",
-        (time.time() - days_ago * DAY, sid),
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (when, sid)
     )
     db._conn.commit()
 
